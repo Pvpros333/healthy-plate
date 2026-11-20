@@ -24,6 +24,10 @@ npm run icons             # regenerate icons/icon-192.png and icon-512.png
 
 There is no lint or build. `.claude/launch.json` starts the same dev server for the Browser preview.
 
+## Hosting
+
+The live site is GitHub Pages, served from the `main` branch root of `Pvpros333/healthy-plate` at https://pvpros333.github.io/healthy-plate/. Pushing to `main` redeploys it. `.nojekyll` makes Pages serve the files as-is. All paths in `index.html`, `manifest.webmanifest` and `sw.js` are relative so the app works under the `/healthy-plate/` subpath; keep them relative.
+
 ## Architecture
 
 The modules in `js/` are pure logic, except `app.js` (DOM) and `storage.js` / `usda.js` (browser APIs). Tests import the pure modules directly in Node.

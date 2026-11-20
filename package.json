@@ -1,0 +1,11 @@
+{
+  "name": "healthy-plate",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node scripts/serve.js",
+    "test": "node --test tests/",
+    "icons": "node scripts/make-icons.js"
+  }
+}

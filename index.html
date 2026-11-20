@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Healthy Plate</title>
+  <meta name="description" content="Daily meal plans and nutrition lookup for fat loss">
+  <meta name="theme-color" content="#2f7d4f">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">Healthy Plate</div>
+    <button id="userChip" class="chip" data-action="go" data-tab="profile" hidden></button>
+  </header>
+
+  <main id="view" tabindex="-1"></main>
+
+  <nav class="tabbar" id="tabbar" hidden>
+    <button data-action="go" data-tab="today"><span class="ic">🍽️</span>Today</button>
+    <button data-action="go" data-tab="lookup"><span class="ic">🔎</span>Lookup</button>
+    <button data-action="go" data-tab="foods"><span class="ic">⭐</span>My Foods</button>
+    <button data-action="go" data-tab="diets"><span class="ic">📋</span>Diets</button>
+    <button data-action="go" data-tab="profile"><span class="ic">👤</span>Profile</button>
+  </nav>
+
+  <dialog id="modal"><div id="modalBody"></div></dialog>
+  <div id="toast" role="status" aria-live="polite"></div>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

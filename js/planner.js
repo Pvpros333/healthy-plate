@@ -155,10 +155,55 @@ function mealTitle(items) {
   return title.charAt(0).toUpperCase() + title.slice(1);
 }
 
+const isVeryLowCarb = (diet) => (diet.carbMaxG || 999) <= 50;
+
+// Picks the foods for a meal the household eats together. Everyone gets the same foods;
+// planDay() then sizes the portions separately for each person's targets.
+//   members: [{ profile, diet }]
+// Foods must be allowed by every member's diet and disliked by nobody. Foods everyone likes
+// are preferred; if no food in a role is liked by everyone, foods anyone likes are used.
+// The carb side is picked only from the non-keto members' rules, and keto members skip it.
+export function pickSharedMeal({ members, foods, date, mealId, variant = 0 }) {
+  const ids = members.map((m) => m.profile.id).sort().join(',');
+  const rand = seededRandom(`shared|${ids}|${date}|${mealId}|${variant}`);
+  const union = (key, list) => [...new Set(list.flatMap((m) => m[key] || []))];
+  const combine = (list) => ({
+    exclude: union('exclude', list.map((m) => m.diet)),
+    prefer: union('prefer', list.map((m) => m.diet)),
+    limit: union('limit', list.map((m) => m.diet)),
+    macros: { fat: Math.max(...list.map((m) => m.diet.macros.fat)) },
+  });
+  const likedAll = members.map((m) => new Set(m.profile.liked || [])).reduce((a, b) => new Set([...a].filter((x) => b.has(x))));
+  const likedAny = union('liked', members.map((m) => m.profile));
+  const disliked = union('disliked', members.map((m) => m.profile));
+  const onlyLiked = members.every((m) => m.profile.onlyLiked !== false);
+
+  const mealType = mealId === 'breakfast' ? 'b' : 'm';
+  const picked = [];
+  const pick = (role, group) => {
+    if (!group.length) return;
+    const diet = combine(group);
+    const used = new Set(picked);
+    let opts = candidates(foods, { role, mealType, diet, profile: { liked: [...likedAll], disliked, onlyLiked }, used });
+    if (!opts.some((o) => likedAll.has(o.food.id))) {
+      opts = candidates(foods, { role, mealType, diet, profile: { liked: likedAny, disliked, onlyLiked }, used });
+    }
+    const food = weightedPick(rand, opts.filter((o) => !used.has(o.food.id)));
+    if (food) picked.push(food.id);
+  };
+  pick('protein', members);
+  pick('carb', members.filter((m) => !isVeryLowCarb(m.diet)));
+  pick(mealType === 'b' ? 'fruit' : 'veg', members);
+  pick('fat', members);
+  return picked;
+}
+
 // variant reshuffles the whole day; mealVariants ({ lunch: 2 }) reshuffles single meals.
-export function planDay({ profile, diet, schedule, targets, foods, date, variant = 0, mealVariants = {} }) {
-  const used = new Set();
-  const veryLowCarb = (diet.carbMaxG || 999) <= 50;
+// fixed ({ dinner: [foodIds] }) forces a meal's foods, e.g. a shared household meal from pickSharedMeal().
+export function planDay({ profile, diet, schedule, targets, foods, date, variant = 0, mealVariants = {}, fixed = {} }) {
+  const byId = new Map(foods.map((f) => [f.id, f]));
+  const used = new Set(Object.values(fixed).flat());
+  const veryLowCarb = isVeryLowCarb(diet);
 
   const meals = schedule.meals.map((slot) => {
     const rand = seededRandom(`${profile.id}|${date}|${variant}|${diet.id}|${schedule.id}|${slot.id}|${mealVariants[slot.id] || 0}`);
@@ -170,16 +215,24 @@ export function planDay({ profile, diet, schedule, targets, foods, date, variant
       fat: targets.fat * slot.share,
     };
 
-    let roles;
-    if (type === 's') roles = veryLowCarb ? ['protein', 'fat'] : ['protein', rand() < 0.5 ? 'fruit' : 'fat'];
-    else if (type === 'b') roles = veryLowCarb ? ['protein', 'veg', 'fat'] : ['protein', 'carb', 'fruit', 'fat'];
-    else roles = veryLowCarb ? ['protein', 'veg', 'fat'] : ['protein', 'carb', 'veg', 'fat'];
-
+    const shared = Boolean(fixed[slot.id]);
     const items = [];
-    for (const role of roles) {
-      const opts = candidates(foods, { role, mealType: type, diet, profile, used: new Set([...used, ...items.map((i) => i.food.id)]) });
-      const food = weightedPick(rand, opts);
-      if (food) items.push({ food, grams: 0 });
+    if (shared) {
+      for (const id of fixed[slot.id]) {
+        const food = byId.get(id);
+        if (!food || !dietAllows(diet, food) || (veryLowCarb && food.role === 'carb')) continue;
+        items.push({ food, grams: 0 });
+      }
+    } else {
+      let roles;
+      if (type === 's') roles = veryLowCarb ? ['protein', 'fat'] : ['protein', rand() < 0.5 ? 'fruit' : 'fat'];
+      else if (type === 'b') roles = veryLowCarb ? ['protein', 'veg', 'fat'] : ['protein', 'carb', 'fruit', 'fat'];
+      else roles = veryLowCarb ? ['protein', 'veg', 'fat'] : ['protein', 'carb', 'veg', 'fat'];
+      for (const role of roles) {
+        const opts = candidates(foods, { role, mealType: type, diet, profile, used: new Set([...used, ...items.map((i) => i.food.id)]) });
+        const food = weightedPick(rand, opts);
+        if (food) items.push({ food, grams: 0 });
+      }
     }
     sizeMeal(items, target);
 
@@ -190,7 +243,7 @@ export function planDay({ profile, diet, schedule, targets, foods, date, variant
         .filter((o) => !inMeal.has(o.food.id) && filter(o.food));
       const food = weightedPick(rand, opts);
       if (!food) return false;
-      items.push({ food, grams: 0 });
+      items.push({ food, grams: 0, personal: shared }); // in a shared meal, extras are just for this person
       sizeMeal(items, target);
       return true;
     };
@@ -202,7 +255,7 @@ export function planDay({ profile, diet, schedule, targets, foods, date, variant
 
     items.forEach((i) => used.add(i.food.id));
     const totals = sumNutrients(items.map((i) => nutrientsFor(i.food, i.grams)));
-    return { id: slot.id, label: slot.label, title: mealTitle(items), items, target, totals };
+    return { id: slot.id, label: slot.label, title: mealTitle(items.filter((i) => !i.personal)), items, target, totals, shared };
   });
 
   return { date, meals, totals: sumNutrients(meals.map((m) => m.totals)) };

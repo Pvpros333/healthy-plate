@@ -10,7 +10,8 @@ export function emptyState() {
     activeId: null,
     customFoods: [],
     logs: {}, // logs[profileId][YYYY-MM-DD] = [{ id, foodId, grams, meal }]
-    weights: {}, // weights[profileId] = [{ date, lb }]
+    weights: {}, // weights[profileId] = [{ date, lb, waist?, neck?, hip? }] (check-ins; tape measures in inches)
+    household: { meals: ['dinner'], members: null }, // shared meals; members null = everyone
     planVariants: {}, // planVariants[profileId][date] = { all: n, <mealId>: n }
     usdaKey: '',
   };

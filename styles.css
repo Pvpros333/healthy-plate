@@ -141,7 +141,7 @@ table.nut td:last-child { text-align: right; font-weight: 600; }
 
 .tabbar {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 5;
-  display: grid; grid-template-columns: repeat(5, 1fr);
+  display: grid; grid-template-columns: repeat(6, 1fr);
   background: var(--card); border-top: 1px solid var(--line);
   padding-bottom: env(safe-area-inset-bottom);
 }
@@ -172,3 +172,37 @@ dialog::backdrop { background: rgba(0,0,0,.45); }
   .topbar { margin-left: -96px; padding-left: 112px; }
   #toast { bottom: 24px; }
 }
+
+/* Shared meals */
+details.cook { margin-top: 8px; border-top: 1px solid var(--line); padding-top: 8px; }
+details.cook summary { cursor: pointer; color: var(--brand); font-weight: 600; font-size: 14px; }
+
+/* Progress */
+.stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.stat { font-size: 24px; font-weight: 700; line-height: 1.1; }
+.stat small { font-size: 13px; font-weight: 400; color: var(--muted); }
+.charts { display: grid; gap: 18px; }
+figure.chart { margin: 0; position: relative; --chart-line: #2f7d4f; }
+figure.chart figcaption { margin-bottom: 4px; }
+figure.chart svg { width: 100%; height: auto; display: block; overflow: visible; touch-action: pan-y; }
+figure.chart .grid { stroke: var(--line); stroke-width: 1; }
+figure.chart .axis { fill: var(--muted); font-size: 12px; }
+figure.chart .line { fill: none; stroke: var(--chart-line); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+figure.chart .pt { fill: var(--chart-line); stroke: var(--card); stroke-width: 2; }
+figure.chart .hover-pt { fill: var(--chart-line); stroke: var(--card); stroke-width: 2; }
+figure.chart .cross { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 3; }
+figure.chart .hit { fill: transparent; cursor: crosshair; }
+figure.chart .tip {
+  position: absolute; pointer-events: none; background: var(--text); color: var(--bg);
+  font-size: 13px; padding: 4px 8px; border-radius: 6px; white-space: nowrap;
+}
+.chart-empty { padding: 8px 0; }
+table.hist td { padding: 6px 4px; }
+table.hist thead td { color: var(--muted); font-size: 13px; font-weight: 400; border-top: 0; }
+table.hist td:last-child { font-weight: 400; }
+@media (prefers-color-scheme: dark) { figure.chart { --chart-line: #47a86e; } }
+@media (max-width: 420px) { .tabbar button { font-size: 10.5px; } }
+figure.chart .cross, figure.chart .hover-pt { visibility: hidden; }
+figure.chart.hovering .cross, figure.chart.hovering .hover-pt { visibility: visible; }
+@media (prefers-color-scheme: dark) { .topbar { background: #1f5636; } }
+@media (prefers-color-scheme: dark) { .btn.primary { color: #0f1a14; } }

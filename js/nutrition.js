@@ -79,3 +79,26 @@ export function sumNutrients(items) {
   for (const n of items) for (const k in t) t[k] += n[k] || 0;
   return t;
 }
+
+// U.S. Navy tape-measure body-fat estimate (inches). Typically within ±3–4% of a DEXA scan;
+// the trend over time is more reliable than any single reading.
+// Women need a hip measurement. Returns null when measurements are missing or impossible.
+export function bodyFatNavy({ sex, heightIn, waist, neck, hip }) {
+  if (!heightIn || !waist || !neck) return null;
+  let bf;
+  if (sex === 'female') {
+    if (!hip || waist + hip - neck <= 0) return null;
+    bf = 163.205 * Math.log10(waist + hip - neck) - 97.684 * Math.log10(heightIn) - 78.387;
+  } else {
+    if (waist - neck <= 0) return null;
+    bf = 86.01 * Math.log10(waist - neck) - 70.041 * Math.log10(heightIn) + 36.76;
+  }
+  return bf > 2 && bf < 70 ? Math.round(bf * 10) / 10 : null;
+}
+
+// Splits body weight into fat and lean mass (lb) from a body-fat %.
+export function composition(weightLb, bfPct) {
+  if (!weightLb || bfPct == null) return null;
+  const fat = (weightLb * bfPct) / 100;
+  return { fat, lean: weightLb - fat };
+}

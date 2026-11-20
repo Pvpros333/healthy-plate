@@ -1,7 +1,7 @@
 import { BUILTIN_FOODS, unitsFor, toGrams, nutrientsFor, formatPortion, foodFromLabel } from './foods.js';
 import { DIETS, SCHEDULES, getDiet, getSchedule } from './diets.js';
-import { dailyTargets, sumNutrients, ACTIVITY_LEVELS, GOALS } from './nutrition.js';
-import { planDay } from './planner.js';
+import { dailyTargets, sumNutrients, ACTIVITY_LEVELS, GOALS, bodyFatNavy, composition } from './nutrition.js';
+import { planDay, pickSharedMeal } from './planner.js';
 import { load, save, exportJSON, importJSON, newId } from './storage.js';
 import { searchUSDA } from './usda.js';
 
@@ -70,13 +70,56 @@ function dayLog(p, date) {
 function variants(p, date) {
   return ((state.planVariants[p.id] ||= {})[date] ||= {});
 }
+// ---------- shared household meals ----------
+const SHARE_KEY = '__shared'; // planVariants[SHARE_KEY][date][mealId] = n
+function household() {
+  return (state.household ||= { meals: ['dinner'], members: null });
+}
+function sharedMembers() {
+  const ids = household().members;
+  return state.profiles.filter((p) => !ids || ids.includes(p.id));
+}
+// Meals this person eats with the household on a date: { dinner: [foodIds] }.
+function sharedFoods(p, date) {
+  const members = sharedMembers();
+  if (members.length < 2 || !members.some((m) => m.id === p.id)) return {};
+  const fixed = {};
+  for (const mealId of household().meals) {
+    const variant = (((state.planVariants[SHARE_KEY] ||= {})[date] ||= {})[mealId]) || 0;
+    fixed[mealId] = pickSharedMeal({
+      members: members.map((m) => ({ profile: m, diet: getDiet(m.diet) })), foods: allFoods(), date, mealId, variant,
+    });
+  }
+  return fixed;
+}
+function otherNames(p) {
+  const names = sharedMembers().filter((m) => m.id !== p.id).map((m) => m.name);
+  return names.length > 1 ? names.slice(0, -1).join(', ') + ' & ' + names[names.length - 1] : names[0] || '';
+}
+
 function planFor(p, date) {
   const v = variants(p, date);
   const { all = 0, ...mealVariants } = v;
   return planDay({
     profile: p, diet: getDiet(p.diet), schedule: getSchedule(p.schedule), targets: targetsFor(p),
-    foods: allFoods(), date, variant: all, mealVariants,
+    foods: allFoods(), date, variant: all, mealVariants, fixed: sharedFoods(p, date),
   });
+}
+
+// Everyone's portions of a shared meal, for the "cook for everyone" list.
+function cookList(mealId, date) {
+  const rows = new Map(); // foodId -> { food, total, per: [{ name, grams }] }
+  for (const m of sharedMembers()) {
+    const meal = planFor(m, date).meals.find((x) => x.id === mealId);
+    if (!meal) continue;
+    for (const it of meal.items) {
+      const row = rows.get(it.food.id) || { food: it.food, total: 0, per: [] };
+      row.total += it.grams;
+      row.per.push({ name: m.name, grams: it.grams });
+      rows.set(it.food.id, row);
+    }
+  }
+  return [...rows.values()];
 }
 function logTotals(entries) {
   return sumNutrients(entries.map((e) => {
@@ -98,6 +141,7 @@ function render() {
   else if (ui.tab === 'lookup') view.innerHTML = lookupView();
   else if (ui.tab === 'foods') view.innerHTML = foodsView(p);
   else if (ui.tab === 'diets') view.innerHTML = dietsView(p);
+  else if (ui.tab === 'progress') view.innerHTML = progressView(p);
   else if (ui.tab === 'profile') view.innerHTML = ui.editing ? profileForm(p) : profileView(p);
   if (ui.tab === 'lookup') renderLookupResults();
 }
@@ -123,14 +167,19 @@ function todayView(p) {
 
   const mealCards = plan.meals.map((m) => {
     const logged = log.some((e) => e.fromPlan === m.id);
+    const cook = m.shared ? cookList(m.id, ui.date) : [];
+    const othersToLog = m.shared && sharedMembers().some((x) => x.id !== p.id && !dayLog(x, ui.date).some((e) => e.fromPlan === m.id));
     return `<div class="card">
-      <div class="meal-head"><span class="meal-label">${esc(m.label)}</span><span class="small muted">${r(m.totals.kcal)} kcal</span></div>
+      <div class="meal-head"><span class="meal-label">${esc(m.label)}${m.shared ? ` <span class="tag">👥 with ${esc(otherNames(p))}</span>` : ''}</span><span class="small muted">${r(m.totals.kcal)} kcal</span></div>
       <h3>${esc(m.title)}</h3>
-      <ul class="items">${m.items.map((i) => `<li><span>${esc(i.food.name)}</span><span class="qty">${esc(formatPortion(i.food, i.grams))}</span></li>`).join('')}</ul>
+      ${m.shared ? `<p class="small muted" style="margin:0">Your portion:</p>` : ''}
+      <ul class="items">${m.items.map((i) => `<li><span>${esc(i.food.name)}${i.personal ? ' <span class="small muted">(just you)</span>' : ''}</span><span class="qty">${esc(formatPortion(i.food, i.grams))}</span></li>`).join('')}</ul>
       ${macroLine(m.totals)}
+      ${cook.length ? `<details class="cook"><summary>Cook for everyone</summary><ul class="items">${cook.map((c) => `<li><span class="grow">${esc(c.food.name)}<br><span class="small muted">${c.per.map((x) => `${esc(x.name)} ${esc(formatPortion(c.food, x.grams).replace(/ \(.*\)$/, ''))}`).join(' · ')}</span></span><span class="qty">${esc(formatPortion(c.food, c.total))}</span></li>`).join('')}</ul><p class="small muted">Cook the total, then serve each person their amount.</p></details>` : ''}
       <div class="row" style="margin-top:10px">
         ${logged ? '<span class="tag">✓ Logged</span>' : `<button class="btn small primary" data-action="ateMeal" data-meal="${m.id}">I ate this</button>`}
-        <button class="btn small" data-action="swapMeal" data-meal="${m.id}">Swap meal</button>
+        ${othersToLog ? `<button class="btn small" data-action="ateMealAll" data-meal="${m.id}">Log for everyone</button>` : ''}
+        <button class="btn small" data-action="swapMeal" data-meal="${m.id}" data-shared="${m.shared ? 1 : ''}">Swap meal</button>
       </div>
     </div>`;
   }).join('');
@@ -180,11 +229,14 @@ function todayView(p) {
   ${logHtml}`;
 }
 
-function shoppingList(p) {
+function shoppingList(p, everyone) {
+  const people = everyone ? state.profiles : [p];
   const totals = new Map();
-  for (let i = 0; i < 7; i++) {
-    for (const m of planFor(p, shiftDate(ui.date, i)).meals) {
-      for (const it of m.items) totals.set(it.food.id, (totals.get(it.food.id) || 0) + it.grams);
+  for (const person of people) {
+    for (let i = 0; i < 7; i++) {
+      for (const m of planFor(person, shiftDate(ui.date, i)).meals) {
+        for (const it of m.items) totals.set(it.food.id, (totals.get(it.food.id) || 0) + it.grams);
+      }
     }
   }
   const groups = { protein: 'Protein', carb: 'Grains, beans & starches', veg: 'Vegetables', fruit: 'Fruit', fat: 'Fats, nuts & cheese', other: 'Other' };
@@ -197,8 +249,12 @@ function shoppingList(p) {
       return `<li><span>${esc(food.name)}</span><span class="qty">${esc(amt)}</span></li>`;
     }).join('')}</ul>`;
   }).join('');
+  const toggle = state.profiles.length > 1
+    ? `<div class="row" style="margin-top:8px"><button class="btn small ${everyone ? 'primary' : ''}" data-action="shopping" data-everyone="1">Everyone</button><button class="btn small ${everyone ? '' : 'primary'}" data-action="shopping" data-everyone="">Just ${esc(p.name)}</button></div>`
+    : '';
   return `<div class="row spread"><h2 style="margin:0">Shopping list</h2><button class="btn small" data-action="closeModal">Close</button></div>
-    <p class="small muted">For ${esc(p.name)}'s plan, ${prettyDate(ui.date)} + 6 days. Amounts are cooked weights for meat, rice, pasta and beans.</p>${rows}`;
+    ${toggle}
+    <p class="small muted">For ${everyone ? 'everyone' : esc(p.name)}, ${prettyDate(ui.date)} + 6 days. Amounts are cooked weights for meat, rice, pasta and beans.</p>${rows}`;
 }
 
 // ---------- lookup ----------
@@ -386,14 +442,16 @@ function profileView(p) {
     <p class="small muted">Resting burn (BMR) ${t.bmr} · Maintenance (TDEE) ${t.tdee} · Fiber ${t.fiber}g+ · Sodium under ${t.sodium} mg</p>
   </div>
 
-  <h2>Weight</h2>
-  <div class="card">
-    <div class="row spread"><span>Now <b>${latest} lb</b>${p.goalWeightLb ? ` · Goal ${p.goalWeightLb} lb` : ''}</span><span class="${change <= 0 ? '' : 'muted'}">${change <= 0 ? '▼' : '▲'} ${Math.abs(change).toFixed(1)} lb since ${start} lb</span></div>
-    <form id="weightForm" class="row" style="margin-top:10px">
-      <input type="number" name="lb" step="0.1" min="70" max="800" inputmode="decimal" placeholder="Today's weight (lb)" class="grow" style="width:auto" required>
-      <button class="btn primary" type="submit">Log weight</button>
-    </form>
-    ${ws.length ? `<ul class="items" style="margin-top:10px">${ws.slice(-8).reverse().map((w) => `<li><span>${prettyDate(w.date)}</span><span class="qty">${w.lb} lb</span></li>`).join('')}</ul>` : '<p class="small muted">Weigh in once a week, same time of day, for the clearest trend. Your targets update with each new weight.</p>'}
+  <p class="small muted">Weight ${latest} lb${p.goalWeightLb ? ` · Goal ${p.goalWeightLb} lb` : ''} · ${change <= 0 ? '▼' : '▲'} ${Math.abs(change).toFixed(1)} lb since ${start} lb. Log weigh-ins and measurements in <a href="#" data-action="go" data-tab="progress">Progress</a>.</p>
+
+  <h2>Cook together</h2>
+  <div class="card">${state.profiles.length < 2
+    ? '<p class="small muted">Add another person below and you can share meals: same foods for everyone, with each person\'s portion sized to their own targets.</p>'
+    : `<p class="small muted">Shared meals use the same foods for everyone, sized to each person's targets. Foods anyone marked “won't eat” or that someone's diet doesn't allow are skipped. Keto eaters skip the starch side.</p>
+      <label>Meals to share</label>
+      <div class="row">${[['breakfast', 'Breakfast'], ['lunch', 'Lunch'], ['dinner', 'Dinner']].map(([id, label]) => `<label class="row" style="margin:0 12px 0 0"><input type="checkbox" data-action="shareMeal" value="${id}" ${household().meals.includes(id) ? 'checked' : ''}> ${label}</label>`).join('')}</div>
+      <label>Who eats together</label>
+      <div class="row">${state.profiles.map((x) => `<label class="row" style="margin:0 12px 0 0"><input type="checkbox" data-action="shareMember" value="${x.id}" ${sharedMembers().some((m) => m.id === x.id) ? 'checked' : ''}> ${esc(x.name)}</label>`).join('')}</div>`}
   </div>
 
   <h2>People</h2>
@@ -414,6 +472,152 @@ function profileView(p) {
   </div>
   <p class="notice">General guidance, not medical advice. Talk to your doctor before major diet changes.</p>`;
 }
+
+// ---------- progress ----------
+function checkins(p) {
+  return (state.weights[p.id] || []).slice().sort((a, b) => a.date.localeCompare(b.date));
+}
+// Each check-in plus its body-fat estimate. Weight is carried forward from the latest weigh-in
+// so a tape-only check-in still gets fat/lean numbers.
+function enriched(p) {
+  let lastLb = p.startWeightLb || p.weightLb;
+  return checkins(p).map((c) => {
+    if (c.lb) lastLb = c.lb;
+    const bf = bodyFatNavy({ sex: p.sex, heightIn: p.heightIn, waist: c.waist, neck: c.neck, hip: c.hip });
+    return { ...c, weight: lastLb, bf, comp: composition(lastLb, bf) };
+  });
+}
+
+const fmtDelta = (x, unit, digits = 1) => `${x > 0 ? '+' : x < 0 ? '−' : '±'}${Math.abs(x).toFixed(digits)}${unit}`;
+
+// Single-series line chart as inline SVG. One axis per chart (weight, waist and body fat each get their own).
+function lineChart(points, { title, unit, digits = 1 }) {
+  if (points.length < 2) return `<div class="chart-empty small muted">${esc(title)}: log at least two check-ins to see a trend.</div>`;
+  const W = 640, H = 200, L = 44, R = 14, T = 14, B = 26;
+  const t0 = Date.parse(points[0].date), t1 = Date.parse(points[points.length - 1].date) || t0 + 1;
+  const vs = points.map((p) => p.v);
+  let lo = Math.min(...vs), hi = Math.max(...vs);
+  const pad = Math.max((hi - lo) * 0.15, unit === '%' ? 0.5 : 1);
+  lo -= pad; hi += pad;
+  const x = (d) => L + ((Date.parse(d) - t0) / Math.max(t1 - t0, 1)) * (W - L - R);
+  const y = (v) => T + (1 - (v - lo) / (hi - lo)) * (H - T - B);
+  const ticks = [lo + (hi - lo) * 0.1, (lo + hi) / 2, hi - (hi - lo) * 0.1];
+  const d = points.map((p, i) => `${i ? 'L' : 'M'}${x(p.date).toFixed(1)},${y(p.v).toFixed(1)}`).join('');
+  const last = points[points.length - 1];
+  const short = (s) => { const [yy, mm, dd] = s.split('-').map(Number); return new Date(yy, mm - 1, dd).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }); };
+  const data = esc(JSON.stringify(points.map((p) => [x(p.date), y(p.v), short(p.date), p.v.toFixed(digits)])));
+  return `<figure class="chart" data-points="${data}" data-unit="${esc(unit)}">
+    <figcaption><b>${esc(title)}</b> <span class="small muted">now ${last.v.toFixed(digits)}${esc(unit)} · ${fmtDelta(last.v - points[0].v, unit, digits)} since ${short(points[0].date)}</span></figcaption>
+    <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(title)} over time">
+      ${ticks.map((v) => `<line class="grid" x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}"/><text class="axis" x="${L - 6}" y="${y(v) + 4}" text-anchor="end">${v.toFixed(unit === '%' ? 1 : 0)}</text>`).join('')}
+      <text class="axis" x="${L}" y="${H - 6}">${short(points[0].date)}</text>
+      <text class="axis" x="${W - R}" y="${H - 6}" text-anchor="end">${short(last.date)}</text>
+      <path class="line" d="${d}"/>
+      ${points.map((p) => `<circle class="pt" cx="${x(p.date)}" cy="${y(p.v)}" r="4"/>`).join('')}
+      <line class="cross" y1="${T}" y2="${H - B}" x1="-10" x2="-10"/>
+      <circle class="hover-pt" r="6" cx="-10" cy="-10"/>
+      <rect class="hit" x="${L}" y="0" width="${W - L - R}" height="${H}"/>
+    </svg>
+    <div class="tip" hidden></div>
+  </figure>`;
+}
+
+function progressView(p) {
+  const rows = enriched(p);
+  const female = p.sex === 'female';
+  const withBf = rows.filter((r0) => r0.bf != null);
+  const first = withBf[0], last = withBf[withBf.length - 1];
+  const weights = rows.filter((r0) => r0.lb);
+  const waists = rows.filter((r0) => r0.waist);
+  const latest = rows[rows.length - 1];
+
+  let summary = '<p class="muted">Log your weight and tape measurements below. With waist and neck (and hips for women) the app estimates body fat, so you can see fat lost and muscle kept even when the scale stalls.</p>';
+  if (rows.length) {
+    const wDelta = weights.length > 1 ? weights[weights.length - 1].lb - weights[0].lb : null;
+    const waistDelta = waists.length > 1 ? waists[waists.length - 1].waist - waists[0].waist : null;
+    const fatDelta = first && last && first !== last ? last.comp.fat - first.comp.fat : null;
+    const leanDelta = first && last && first !== last ? last.comp.lean - first.comp.lean : null;
+    let read = '';
+    if (fatDelta != null && fatDelta < 0 && leanDelta >= 0) read = 'You’re losing fat and keeping (or adding) muscle — exactly the goal.';
+    else if (fatDelta != null && fatDelta < 0) read = 'Fat is coming off. Some lean mass dropped too — keep protein high and keep lifting.';
+    else if (waistDelta != null && waistDelta < 0 && wDelta != null && wDelta >= -0.5) read = 'The scale is flat but your waist is shrinking — that’s fat loss while you build muscle.';
+    else if (fatDelta != null && fatDelta > 0) read = 'Body fat is up a little since you started tracking. Check your logging and portions for a week or two.';
+    summary = `<div class="stats">
+        <div><div class="stat">${latest.weight ? r(latest.weight * 10) / 10 : '—'}<small> lb</small></div><div class="small muted">Weight${wDelta != null ? ' ' + fmtDelta(wDelta, ' lb') : ''}</div></div>
+        <div><div class="stat">${waists.length ? waists[waists.length - 1].waist : '—'}<small> in</small></div><div class="small muted">Waist${waistDelta != null ? ' ' + fmtDelta(waistDelta, ' in') : ''}</div></div>
+        <div><div class="stat">${last ? last.bf : '—'}<small> %</small></div><div class="small muted">Body fat (est.)</div></div>
+      </div>
+      ${fatDelta != null ? `<div class="stats" style="margin-top:12px">
+        <div><div class="stat">${fmtDelta(fatDelta, '')}<small> lb</small></div><div class="small muted">Fat since ${prettyDate(first.date).replace(/^.* · /, '')}</div></div>
+        <div><div class="stat">${fmtDelta(leanDelta, '')}<small> lb</small></div><div class="small muted">Lean mass (muscle, water, bone)</div></div>
+        <div><div class="stat">${r(last.comp.fat)}<small> lb</small></div><div class="small muted">Fat now</div></div>
+      </div>` : ''}
+      ${read ? `<p style="margin-top:12px">${read}</p>` : ''}`;
+  }
+
+  const today = rows.find((r0) => r0.date === todayStr()) || {};
+  return `<h1>${esc(p.name)}'s progress</h1>
+  <div class="card">${summary}</div>
+
+  <h2>Check in</h2>
+  <form id="checkinForm" class="card">
+    <div class="grid2">
+      <div><label>Weight (lb)</label><input type="number" name="lb" step="0.1" min="70" max="800" inputmode="decimal" value="${today.lb ?? ''}"></div>
+      <div><label>Waist (in)</label><input type="number" name="waist" step="0.25" min="15" max="90" inputmode="decimal" value="${today.waist ?? ''}"></div>
+      <div><label>Neck (in)</label><input type="number" name="neck" step="0.25" min="8" max="35" inputmode="decimal" value="${today.neck ?? ''}"></div>
+      ${female ? `<div><label>Hips (in)</label><input type="number" name="hip" step="0.25" min="20" max="90" inputmode="decimal" value="${today.hip ?? ''}"></div>` : ''}
+    </div>
+    <details class="small muted" style="margin-top:10px"><summary>How to measure</summary>
+      <p>Use a soft tape, snug but not squeezing, first thing in the morning before eating. <b>Waist:</b> ${female ? 'at the narrowest point, usually just above the belly button' : 'around the belly button'}, relaxed — don't suck in. <b>Neck:</b> just below the Adam's apple, tape angled slightly down toward the front.${female ? ' <b>Hips:</b> around the widest part of the buttocks.' : ''} Measure every 1–2 weeks; weigh in weekly, same time of day.</p>
+    </details>
+    <div class="row" style="margin-top:12px"><button class="btn primary" type="submit">Save check-in for today</button><span class="small muted">Anything left blank is skipped.</span></div>
+  </form>
+
+  <h2>Trends</h2>
+  <div class="card charts">
+    ${lineChart(weights.map((r0) => ({ date: r0.date, v: r0.lb })), { title: 'Weight', unit: ' lb' })}
+    ${lineChart(waists.map((r0) => ({ date: r0.date, v: r0.waist })), { title: 'Waist', unit: ' in', digits: 2 })}
+    ${lineChart(withBf.map((r0) => ({ date: r0.date, v: r0.bf })), { title: 'Body fat (estimated)', unit: '%' })}
+  </div>
+  <p class="small muted">Body fat uses the U.S. Navy tape-measure method. Any single reading can be off by 3–4%, but the trend is reliable when you measure the same way each time.</p>
+
+  <h2>History</h2>
+  ${rows.length ? `<div class="card"><table class="nut hist"><thead><tr><td>Date</td><td>Weight</td><td>Waist</td><td>Body fat</td><td></td></tr></thead><tbody>
+    ${rows.slice().reverse().map((c) => `<tr><td>${prettyDate(c.date).replace(/^(Today|Yesterday) · /, '$1 ')}</td><td>${c.lb ? c.lb + ' lb' : '—'}</td><td>${c.waist ? c.waist + '"' : '—'}</td><td>${c.bf != null ? c.bf + '%' : '—'}</td><td><button class="btn small ghost danger" data-action="deleteCheckin" data-date="${c.date}" aria-label="Delete check-in">✕</button></td></tr>`).join('')}
+  </tbody></table></div>` : '<p class="muted small">No check-ins yet.</p>'}`;
+}
+
+// Hover/tap readout for progress charts: nearest point gets a crosshair and a tooltip.
+function chartPointer(e) {
+  const fig = e.target.closest('figure.chart');
+  if (!fig) return;
+  const svg = fig.querySelector('svg');
+  const pts = JSON.parse(fig.dataset.points);
+  const box = svg.getBoundingClientRect();
+  const vx = ((e.clientX - box.left) / box.width) * svg.viewBox.baseVal.width;
+  let best = pts[0];
+  for (const p of pts) if (Math.abs(p[0] - vx) < Math.abs(best[0] - vx)) best = p;
+  const [px, py, label, val] = best;
+  const cross = svg.querySelector('.cross');
+  cross.setAttribute('x1', px); cross.setAttribute('x2', px);
+  const dot = svg.querySelector('.hover-pt');
+  dot.setAttribute('cx', px); dot.setAttribute('cy', py);
+  fig.classList.add('hovering');
+  const tip = fig.querySelector('.tip');
+  tip.hidden = false;
+  tip.textContent = `${label}: ${val}${fig.dataset.unit}`;
+  const scale = box.width / svg.viewBox.baseVal.width;
+  tip.style.left = Math.min(Math.max(px * scale - 50, 0), box.width - 110) + 'px';
+  tip.style.top = Math.max(py * scale - 40, 0) + 'px';
+}
+document.addEventListener('pointermove', (e) => { if (e.target.matches?.('figure.chart .hit')) chartPointer(e); });
+document.addEventListener('pointerdown', (e) => { if (e.target.matches?.('figure.chart .hit')) chartPointer(e); });
+document.addEventListener('pointerout', (e) => {
+  if (!e.target.matches?.('figure.chart .hit')) return;
+  const fig = e.target.closest('figure.chart');
+  fig.querySelector('.tip').hidden = true;
+  fig.classList.remove('hovering');
+});
 
 // ---------- actions ----------
 function updateProfile(p, changes) {
@@ -441,20 +645,46 @@ const actions = {
     render();
   },
   swapMeal(el) {
-    const v = variants(active(), ui.date);
-    v[el.dataset.meal] = (v[el.dataset.meal] || 0) + 1;
+    const id = el.dataset.meal;
+    const v = el.dataset.shared ? ((state.planVariants[SHARE_KEY] ||= {})[ui.date] ||= {}) : variants(active(), ui.date);
+    v[id] = (v[id] || 0) + 1;
+    persist();
+    render();
+    if (el.dataset.shared) toast(`Swapped for ${otherNames(active())} too`);
+  },
+  ateMeal(el) {
+    logPlannedMeal(active(), el.dataset.meal);
+    persist();
+    render();
+    toast('Logged');
+  },
+  ateMealAll(el) {
+    for (const m of sharedMembers()) logPlannedMeal(m, el.dataset.meal);
+    persist();
+    render();
+    toast('Logged for everyone');
+  },
+  deleteCheckin(el) {
+    const p = active();
+    if (!confirm(`Delete the check-in from ${prettyDate(el.dataset.date)}?`)) return;
+    state.weights[p.id] = (state.weights[p.id] || []).filter((w) => w.date !== el.dataset.date);
+    const lbs = checkins(p).filter((c) => c.lb);
+    if (lbs.length) p.weightLb = lbs[lbs.length - 1].lb;
     persist();
     render();
   },
-  ateMeal(el) {
-    const p = active();
-    const meal = planFor(p, ui.date).meals.find((m) => m.id === el.dataset.meal);
-    if (!meal) return;
-    const log = dayLog(p, ui.date);
-    for (const it of meal.items) log.push({ id: newId('log'), foodId: it.food.id, grams: it.grams, meal: meal.id, fromPlan: meal.id });
+  shareMeal(el) {
+    const h = household();
+    h.meals = el.checked ? [...new Set([...h.meals, el.value])] : h.meals.filter((x) => x !== el.value);
     persist();
     render();
-    toast(`${meal.label} logged`);
+  },
+  shareMember(el) {
+    const h = household();
+    const ids = h.members || state.profiles.map((p) => p.id);
+    h.members = el.checked ? [...new Set([...ids, el.value])] : ids.filter((x) => x !== el.value);
+    persist();
+    render();
   },
   removeLog(el) {
     const p = active();
@@ -464,9 +694,10 @@ const actions = {
     persist();
     render();
   },
-  shopping() {
-    modalBody.innerHTML = shoppingList(active());
-    modal.showModal();
+  shopping(el) {
+    const everyone = el.dataset.everyone === undefined ? state.profiles.length > 1 : Boolean(el.dataset.everyone);
+    modalBody.innerHTML = shoppingList(active(), everyone);
+    if (!modal.open) modal.showModal();
   },
   closeModal() {
     modal.close();
@@ -587,6 +818,14 @@ const actions = {
   },
 };
 
+function logPlannedMeal(p, mealId) {
+  const log = dayLog(p, ui.date);
+  if (log.some((e) => e.fromPlan === mealId)) return;
+  const meal = planFor(p, ui.date).meals.find((m) => m.id === mealId);
+  if (!meal) return;
+  for (const it of meal.items) log.push({ id: newId('log'), foodId: it.food.id, grams: it.grams, meal: meal.id, fromPlan: meal.id });
+}
+
 function toggleLike(p, id) {
   p.liked ||= [];
   p.disliked = (p.disliked || []).filter((x) => x !== id);
@@ -613,8 +852,7 @@ document.addEventListener('keydown', (e) => {
 
 document.addEventListener('change', (e) => {
   const el = e.target;
-  if (el.dataset.action === 'onlyLiked') actions.onlyLiked(el);
-  else if (el.dataset.action === 'schedule') actions.schedule(el);
+  if (['onlyLiked', 'schedule', 'shareMeal', 'shareMember'].includes(el.dataset.action)) actions[el.dataset.action](el);
   else if (el.id === 'funit') updateFoodModal();
   else if (el.id === 'importFile' && el.files[0]) {
     el.files[0].text().then((text) => {
@@ -678,16 +916,18 @@ document.addEventListener('submit', (e) => {
     persist();
     render();
     window.scrollTo(0, 0);
-  } else if (form.id === 'weightForm') {
+  } else if (form.id === 'checkinForm') {
     const p = active();
-    const lb = num('lb');
-    const list = (state.weights[p.id] ||= []).filter((w) => w.date !== todayStr());
-    list.push({ date: todayStr(), lb });
+    const entry = { date: todayStr() };
+    for (const k of ['lb', 'waist', 'neck', 'hip']) if (num(k)) entry[k] = num(k);
+    if (Object.keys(entry).length === 1) return toast('Enter at least one number');
+    const list = (state.weights[p.id] ||= []).filter((w) => w.date !== entry.date);
+    list.push(entry);
     state.weights[p.id] = list;
-    p.weightLb = lb; // targets follow the latest weight
+    if (entry.lb) p.weightLb = entry.lb; // targets follow the latest weight
     persist();
     render();
-    toast('Weight logged — targets updated');
+    toast(entry.lb ? 'Check-in saved — targets updated' : 'Check-in saved');
   } else if (form.id === 'usdaForm') {
     state.usdaKey = fd.get('key').trim();
     persist();

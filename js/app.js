@@ -4,6 +4,8 @@ import { dailyTargets, sumNutrients, ACTIVITY_LEVELS, GOALS, bodyFatNavy, compos
 import { planDay, pickSharedMeal } from './planner.js';
 import { load, save, exportJSON, importJSON, newId } from './storage.js';
 import { searchUSDA } from './usda.js';
+import { recipeTotals, perServing, buildRecipeFood } from './recipes.js';
+import { lookupBarcode, startScanner, cleanCode } from './barcode.js';
 
 // ---------- state ----------
 let state = load();
@@ -142,6 +144,7 @@ function render() {
   else if (ui.tab === 'foods') view.innerHTML = foodsView(p);
   else if (ui.tab === 'diets') view.innerHTML = dietsView(p);
   else if (ui.tab === 'progress') view.innerHTML = progressView(p);
+  else if (ui.tab === 'recipe') view.innerHTML = ui.recipe ? recipeView() : foodsView(p);
   else if (ui.tab === 'profile') view.innerHTML = ui.editing ? profileForm(p) : profileView(p);
   if (ui.tab === 'lookup') renderLookupResults();
 }
@@ -260,7 +263,8 @@ function shoppingList(p, everyone) {
 // ---------- lookup ----------
 function lookupView() {
   return `<h1>Food lookup</h1>
-  <p class="muted small">Type a food, pick it, then enter how much to see the nutrition.</p>
+  <div class="row" style="margin-bottom:12px"><button class="btn primary" data-action="scan">📷 Scan a barcode</button><button class="btn" data-action="newRecipe">🍲 Build a recipe</button></div>
+  <p class="muted small">Or type a food, pick it, then enter how much to see the nutrition.</p>
   <input type="search" id="lookupQuery" placeholder="e.g. chicken breast, oats, banana" value="${esc(ui.lookup.query)}" autocomplete="off">
   <div id="lookupResults"></div>
   <div class="row" style="margin-top:16px"><button class="btn" data-action="customFood">+ Add a food from its nutrition label</button></div>`;
@@ -299,7 +303,7 @@ function openFoodModal(food) {
     <label for="fmeal">Add to ${esc(p.name)}'s log for ${prettyDate(ui.date)}</label>
     <div class="row"><select id="fmeal" class="grow" style="width:auto">${meals.map((m) => `<option value="${m.id}">${esc(m.label)}</option>`).join('')}<option value="other">Other</option></select>
       <button class="btn primary" data-action="logFood">Add</button></div>
-    ${food.role !== 'other' || food.custom ? `<div class="row" style="margin-top:12px"><button class="btn small" data-action="toggleLikeModal">${liked ? '★ Liked — used in plans' : '☆ I like this (use in plans)'}</button></div>` : ''}`;
+    <div class="row" style="margin-top:12px">${food.role !== 'other' || food.custom ? `<button class="btn small" data-action="toggleLikeModal">${liked ? '★ Liked — used in plans' : '☆ I like this (use in plans)'}</button>` : ''}${food.recipe ? `<button class="btn small" data-action="editRecipe" data-id="${esc(food.id)}">Edit recipe</button>` : ''}</div>`;
   updateFoodModal();
   if (!modal.open) modal.showModal();
 }
@@ -362,12 +366,17 @@ function foodsView(p) {
     const fs = allFoods().filter((f) => f.role === role);
     return fs.length ? `<h2>${label}</h2><div class="chips">${fs.map(chip).join('')}</div>` : '';
   }).join('');
-  const customs = state.customFoods;
+  const customs = state.customFoods.filter((f) => !f.recipe);
+  const recipes = state.customFoods.filter((f) => f.recipe);
   return `<h1>${esc(p.name)}'s foods</h1>
   <p class="muted">Tap once for <b>★ like</b>, twice for <b>✕ won't eat</b>, three times to clear. Meal plans are built from the foods you like. Faded foods aren't allowed on ${esc(diet.name)}.</p>
   <div class="card row spread"><span>Only plan foods I like<br><span class="small muted">${liked.size} liked · ${disliked.size} won't eat</span></span>
     <label class="row" style="margin:0"><input type="checkbox" data-action="onlyLiked" ${p.onlyLiked !== false ? 'checked' : ''}> On</label></div>
   ${groups}
+  <h2>Recipes</h2>
+  ${recipes.length ? `<ul class="items">${recipes.map((f) => { const u = f.show; const n = nutrientsFor(f, f.units[u]); return `<li><span class="grow">${esc(f.name)}<br><span class="small muted">1 ${esc(u)}: ${r(n.kcal)} kcal · ${r(n.protein)}g P · ${r(n.carbs)}g C · ${r(n.fat)}g F</span></span><span class="row"><button class="btn small" data-action="editRecipe" data-id="${esc(f.id)}">Edit</button><button class="btn small ghost danger" data-action="deleteCustom" data-id="${esc(f.id)}">Delete</button></span></li>`; }).join('')}</ul>` : '<p class="muted small">Enter a dish you make — chili, a casserole, overnight oats — and the app works out the nutrition per serving.</p>'}
+  <div class="row" style="margin-top:8px"><button class="btn" data-action="newRecipe">🍲 Build a recipe</button></div>
+
   <h2>Foods you added</h2>
   ${customs.length ? `<ul class="items">${customs.map((f) => `<li><span>${esc(f.name)}<br><span class="small muted">${r(f.kcal)} kcal / 100 g${f.role !== 'other' ? ' · planned as ' + esc(f.role) : ''}</span></span><button class="btn small ghost danger" data-action="deleteCustom" data-id="${esc(f.id)}">Delete</button></li>`).join('')}</ul>` : '<p class="muted small">None yet. Add foods from Lookup (USDA search or a nutrition label).</p>'}
   <div class="row" style="margin-top:8px"><button class="btn" data-action="customFood">+ Add a food from its nutrition label</button></div>`;
@@ -471,6 +480,198 @@ function profileView(p) {
     <form id="usdaForm" class="row"><input type="text" name="key" class="grow" style="width:auto" placeholder="USDA API key (optional)" value="${esc(state.usdaKey)}" autocomplete="off"><button class="btn" type="submit">Save</button></form>
   </div>
   <p class="notice">General guidance, not medical advice. Talk to your doctor before major diet changes.</p>`;
+}
+
+// ---------- recipes ----------
+// ui.recipe is the draft being edited: { id, name, servings, servingName, role, meals,
+// ingredients: [{ foodId, qty, unit, grams }], extra: { foodId: food } (USDA/scanned foods not saved yet), query, usda, usdaStatus }
+function draftFood(id) {
+  return foodById(id) || ui.recipe?.extra[id];
+}
+
+function newDraft(food) {
+  const rc = food?.recipe;
+  return {
+    id: food?.id || null,
+    name: food?.name || '',
+    servings: rc?.servings || 4,
+    servingName: rc?.servingName || '',
+    role: food?.role || 'other',
+    meals: food?.meals || 'm',
+    ingredients: rc ? rc.ingredients.map((i) => ({ ...i })) : [],
+    extra: {},
+    query: '',
+    usda: [],
+    usdaStatus: '',
+  };
+}
+
+function recipeTotalsHtml() {
+  const d = ui.recipe;
+  const totals = recipeTotals(d.ingredients, draftFood);
+  const per = perServing(totals, d.servings);
+  const unit = d.servingName.trim() || 'serving';
+  if (!d.ingredients.length) return '<p class="small muted">Add ingredients to see nutrition per serving.</p>';
+  return `<div class="row spread"><b>Per ${esc(unit)}</b><span class="small muted">${r(per.grams)} g each · ${r(totals.grams)} g total</span></div>
+    ${macroLine(per)}
+    <p class="small muted" style="margin:6px 0 0">Fiber ${per.fiber.toFixed(1)} g · Sodium ${r(per.sodium)} mg · Whole recipe ${r(totals.kcal)} kcal</p>`;
+}
+
+function ingRowHtml(ing, idx) {
+  const f = draftFood(ing.foodId);
+  if (!f) return '';
+  const units = Object.keys(unitsFor(f));
+  return `<li class="ing" data-row="${idx}">
+    <div class="grow"><div>${esc(f.name)}</div><div class="small muted ing-kcal">${r(nutrientsFor(f, ing.grams).kcal)} kcal</div></div>
+    <input type="number" data-ing="${idx}" data-field="qty" value="${ing.qty}" min="0" step="any" inputmode="decimal" aria-label="Amount">
+    <select data-ing="${idx}" data-field="unit" aria-label="Unit">${units.map((u) => `<option ${u === ing.unit ? 'selected' : ''}>${esc(u)}</option>`).join('')}</select>
+    <button class="btn small ghost danger" data-action="removeIng" data-idx="${idx}" aria-label="Remove">✕</button>
+  </li>`;
+}
+
+function recipeView() {
+  const d = ui.recipe;
+  return `<h1>${d.id ? 'Edit recipe' : 'New recipe'}</h1>
+  <div id="recipeMeta" class="card">
+    <label>Recipe name</label><input type="text" name="name" value="${esc(d.name)}" placeholder="e.g. Turkey chili">
+    <div class="grid2">
+      <div><label>Makes how many servings?</label><input type="number" name="servings" min="1" step="any" inputmode="decimal" value="${d.servings}"></div>
+      <div><label>Serving name (optional)</label><input type="text" name="servingName" value="${esc(d.servingName)}" placeholder="bowl, slice, cup…"></div>
+    </div>
+  </div>
+
+  <h2>Ingredients</h2>
+  <p class="small muted">Use raw amounts for meat and dry amounts for rice and pasta if that's how you measure them; pick the matching food (e.g. "Oats, rolled (dry)").</p>
+  <ul class="items ings" id="ingList">${d.ingredients.map(ingRowHtml).join('') || '<li class="muted small">No ingredients yet.</li>'}</ul>
+  <div class="card">
+    <div class="row"><input type="search" id="ingQuery" class="grow" style="width:auto" placeholder="Add an ingredient…" value="${esc(d.query)}" autocomplete="off"><button class="btn" data-action="scan" data-for="recipe">📷 Scan</button></div>
+    <div id="ingResults"></div>
+  </div>
+
+  <div class="card" id="recipeTotals">${recipeTotalsHtml()}</div>
+
+  <div class="card" id="recipePlan">
+    <label>Use it in meal plans as</label>
+    <select data-field="role" data-recipe="1">${[['other', "Don't plan it (just for logging)"], ['protein', 'Main dish (sized by protein)'], ['carb', 'Side / starch'], ['fat', 'Snack or topping']].map(([v, l]) => `<option value="${v}" ${d.role === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
+    <div class="row" style="margin-top:8px">${[['b', 'Breakfast'], ['m', 'Lunch/Dinner'], ['s', 'Snack']].map(([v, l]) => `<label class="row" style="margin:0 12px 0 0"><input type="checkbox" data-field="meal" data-recipe="1" value="${v}" ${d.meals.includes(v) ? 'checked' : ''}> ${l}</label>`).join('')}</div>
+  </div>
+
+  <div class="row"><button class="btn primary" data-action="saveRecipe">Save recipe</button><button class="btn" data-action="cancelRecipe">Cancel</button></div>`;
+}
+
+function renderIngResults() {
+  const box = $('#ingResults');
+  if (!box || !ui.recipe) return;
+  const d = ui.recipe;
+  const words = d.query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (!words.length) return (box.innerHTML = '');
+  const local = allFoods().filter((f) => f.id !== d.id && words.every((w) => f.name.toLowerCase().includes(w))).slice(0, 12);
+  const li = (f) => `<li data-action="addIng" data-id="${esc(f.id)}"><div>${esc(f.name)}</div><div class="small muted">${r(f.kcal)} kcal · ${r(f.protein)}g P per 100 g</div></li>`;
+  box.innerHTML = `<ul class="results">${local.map(li).join('')}</ul>
+    <div class="row" style="margin:10px 0"><button class="btn small" data-action="ingUsda">Search USDA for “${esc(d.query.trim())}”</button><span class="small muted">${esc(d.usdaStatus)}</span></div>
+    ${d.usda.length ? `<ul class="results">${d.usda.map(li).join('')}</ul>` : ''}`;
+}
+
+function refreshRecipe() {
+  const list = $('#ingList');
+  if (list) list.innerHTML = ui.recipe.ingredients.map(ingRowHtml).join('') || '<li class="muted small">No ingredients yet.</li>';
+  const t = $('#recipeTotals');
+  if (t) t.innerHTML = recipeTotalsHtml();
+}
+
+// Typing in the recipe form updates the draft and the totals without re-rendering (keeps focus).
+function recipeInput(el) {
+  const d = ui.recipe;
+  if (!d) return;
+  if (el.dataset.ing != null) {
+    const ing = d.ingredients[Number(el.dataset.ing)];
+    const f = draftFood(ing.foodId);
+    if (el.dataset.field === 'qty') ing.qty = parseFloat(el.value) || 0;
+    else ing.unit = el.value;
+    ing.grams = toGrams(f, ing.qty, ing.unit);
+    const row = el.closest('li');
+    row.querySelector('.ing-kcal').textContent = `${r(nutrientsFor(f, ing.grams).kcal)} kcal`;
+  } else if (el.dataset.recipe) {
+    if (el.dataset.field === 'role') d.role = el.value;
+    else d.meals = [...document.querySelectorAll('[data-field=meal][data-recipe]')].filter((x) => x.checked).map((x) => x.value).join('');
+    return;
+  } else if (el.name === 'name') d.name = el.value;
+  else if (el.name === 'servings') d.servings = parseFloat(el.value) || 1;
+  else if (el.name === 'servingName') d.servingName = el.value;
+  $('#recipeTotals').innerHTML = recipeTotalsHtml();
+}
+
+function addIngredient(food) {
+  const d = ui.recipe;
+  if (!foodById(food.id)) d.extra[food.id] = food;
+  const unit = food.show && unitsFor(food)[food.show] ? food.show : 'g';
+  const qty = unit === 'g' ? 100 : 1;
+  d.ingredients.push({ foodId: food.id, qty, unit, grams: toGrams(food, qty, unit) });
+  d.query = '';
+  d.usda = [];
+  const q = $('#ingQuery');
+  if (q) q.value = '';
+  renderIngResults();
+  refreshRecipe();
+  const last = document.querySelector(`#ingList [data-ing="${d.ingredients.length - 1}"][data-field=qty]`);
+  if (last) { last.focus(); last.select(); }
+}
+
+// ---------- barcode scanning ----------
+let stopScanner = null;
+let scanTarget = 'lookup'; // 'lookup' opens the food; 'recipe' adds it as an ingredient
+
+function stopScan() {
+  if (stopScanner) {
+    try { stopScanner(); } catch { /* already stopped */ }
+    stopScanner = null;
+  }
+}
+
+function scanModal() {
+  modalFood = null;
+  modalBody.innerHTML = `
+    <div class="row spread"><h2 style="margin:0">Scan a barcode</h2><button class="btn small" data-action="closeModal">Close</button></div>
+    <div class="scanbox"><video id="scanVideo" playsinline muted></video><div class="scanframe"></div></div>
+    <p id="scanStatus" class="small muted">Starting camera…</p>
+    <form id="barcodeForm" class="row"><input type="text" name="code" inputmode="numeric" pattern="[0-9 ]*" class="grow" style="width:auto" placeholder="Or type the number under the barcode" autocomplete="off"><button class="btn" type="submit">Look up</button></form>`;
+  if (!modal.open) modal.showModal();
+  const video = $('#scanVideo');
+  startScanner(video, (code) => handleBarcode(code))
+    .then((stop) => {
+      if (!modal.open || !$('#scanVideo')) return stop();
+      stopScanner = stop;
+      $('#scanStatus').textContent = 'Point the camera at the barcode and hold steady.';
+    })
+    .catch((err) => {
+      const status = $('#scanStatus');
+      if (!status) return;
+      status.textContent = err?.name === 'NotAllowedError'
+        ? 'Camera permission was blocked. Allow the camera for this site in your browser settings, or type the number below.'
+        : err?.message || 'Could not start the camera. Type the number below instead.';
+      $('.scanbox')?.remove();
+    });
+}
+
+async function handleBarcode(code) {
+  stopScan();
+  const status = $('#scanStatus');
+  if (status) status.textContent = `Looking up ${code}…`;
+  $('.scanbox')?.remove();
+  const known = allFoods().find((f) => f.barcode === code);
+  const food = known || (await lookupBarcode(code, state.usdaKey));
+  if (!food) {
+    const s = $('#scanStatus');
+    if (s) s.innerHTML = `No nutrition found for barcode ${esc(code)}. <a href="#" data-action="customFood">Add it from the label instead</a>.`;
+    return;
+  }
+  if (scanTarget === 'recipe' && ui.recipe) {
+    modal.close();
+    addIngredient(food);
+    toast(`Added ${food.name}`);
+  } else {
+    openFoodModal(food);
+  }
 }
 
 // ---------- progress ----------
@@ -664,6 +865,78 @@ const actions = {
     render();
     toast('Logged for everyone');
   },
+  scan(el) {
+    scanTarget = el.dataset.for === 'recipe' ? 'recipe' : 'lookup';
+    scanModal();
+  },
+  newRecipe() {
+    ui.recipe = newDraft(null);
+    ui.tab = 'recipe';
+    if (modal.open) modal.close();
+    render();
+    window.scrollTo(0, 0);
+  },
+  editRecipe(el) {
+    const f = foodById(el.dataset.id);
+    if (!f) return;
+    ui.recipe = newDraft(f);
+    ui.tab = 'recipe';
+    if (modal.open) modal.close();
+    render();
+    window.scrollTo(0, 0);
+  },
+  addIng(el) {
+    const id = el.dataset.id;
+    const food = foodById(id) || ui.recipe.usda.find((f) => f.id === id);
+    if (food) addIngredient(food);
+  },
+  removeIng(el) {
+    ui.recipe.ingredients.splice(Number(el.dataset.idx), 1);
+    refreshRecipe();
+  },
+  async ingUsda() {
+    const d = ui.recipe;
+    const q = d.query.trim();
+    if (!q) return;
+    d.usdaStatus = 'Searching…';
+    renderIngResults();
+    try {
+      d.usda = await searchUSDA(q, state.usdaKey);
+      d.usdaStatus = d.usda.length ? '' : 'No USDA results.';
+    } catch (e) {
+      d.usda = [];
+      d.usdaStatus = e.message;
+    }
+    renderIngResults();
+  },
+  saveRecipe() {
+    const d = ui.recipe;
+    if (!d.name.trim()) return toast('Give the recipe a name');
+    let food;
+    try {
+      food = buildRecipeFood({ ...d, ingredients: d.ingredients.filter((i) => i.grams > 0) }, draftFood);
+    } catch (e) {
+      return toast(e.message);
+    }
+    // Ingredients found through USDA or a barcode are saved too, so the recipe can be edited later.
+    for (const i of d.ingredients) if (!foodById(i.foodId) && d.extra[i.foodId]) state.customFoods.push(d.extra[i.foodId]);
+    const at = state.customFoods.findIndex((f) => f.id === food.id);
+    if (at >= 0) state.customFoods[at] = food;
+    else state.customFoods.push(food);
+    const p = active();
+    if (food.role !== 'other' && !(p.liked || []).includes(food.id)) toggleLike(p, food.id);
+    persist();
+    ui.recipe = null;
+    ui.tab = 'foods';
+    render();
+    window.scrollTo(0, 0);
+    toast(`Saved ${food.name}`);
+  },
+  cancelRecipe() {
+    ui.recipe = null;
+    ui.tab = 'foods';
+    render();
+  },
   deleteCheckin(el) {
     const p = active();
     if (!confirm(`Delete the check-in from ${prettyDate(el.dataset.date)}?`)) return;
@@ -848,12 +1121,14 @@ document.addEventListener('keydown', (e) => {
     actions.pickDiet(e.target);
   }
   if (e.key === 'Enter' && e.target.id === 'lookupQuery') actions.usdaSearch();
+  if (e.key === 'Enter' && e.target.id === 'ingQuery') { e.preventDefault(); actions.ingUsda(); }
 });
 
 document.addEventListener('change', (e) => {
   const el = e.target;
   if (['onlyLiked', 'schedule', 'shareMeal', 'shareMember'].includes(el.dataset.action)) actions[el.dataset.action](el);
   else if (el.id === 'funit') updateFoodModal();
+  else if (el.dataset.ing != null || el.dataset.recipe || el.closest?.('#recipeMeta')) recipeInput(el);
   else if (el.id === 'importFile' && el.files[0]) {
     el.files[0].text().then((text) => {
       try {
@@ -878,6 +1153,12 @@ document.addEventListener('input', (e) => {
     ui.lookup.usdaStatus = '';
     renderLookupResults();
   } else if (e.target.id === 'fqty') updateFoodModal();
+  else if (e.target.id === 'ingQuery') {
+    ui.recipe.query = e.target.value;
+    ui.recipe.usda = [];
+    ui.recipe.usdaStatus = '';
+    renderIngResults();
+  } else if (e.target.dataset.ing != null || e.target.closest?.('#recipeMeta')) recipeInput(e.target);
 });
 
 document.addEventListener('submit', (e) => {
@@ -886,6 +1167,11 @@ document.addEventListener('submit', (e) => {
   const fd = new FormData(form);
   const num = (k) => (fd.get(k) === '' || fd.get(k) == null ? null : Number(fd.get(k)));
 
+  if (form.id === 'barcodeForm') {
+    const code = cleanCode(fd.get('code'));
+    if (!code) return toast('Barcodes are 8–14 digits');
+    return handleBarcode(code);
+  }
   if (form.id === 'profileForm') {
     const data = {
       name: fd.get('name').trim(),
@@ -951,6 +1237,8 @@ document.addEventListener('submit', (e) => {
     toast('Food saved');
   }
 });
+
+modal.addEventListener('close', () => stopScan());
 
 modal.addEventListener('click', (e) => {
   if (e.target === modal) modal.close(); // tap outside to close

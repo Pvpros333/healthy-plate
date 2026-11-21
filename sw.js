@@ -1,9 +1,9 @@
 // Offline support: cache the app shell and fall back to it when there's no network.
 // Add any new app file to SHELL so it works offline.
-const VERSION = 'hp-v1';
+const VERSION = 'hp-v2';
 const SHELL = [
   './', 'index.html', 'styles.css', 'manifest.webmanifest',
-  'js/app.js', 'js/foods.js', 'js/diets.js', 'js/nutrition.js', 'js/planner.js', 'js/storage.js', 'js/usda.js',
+  'js/app.js', 'js/foods.js', 'js/diets.js', 'js/nutrition.js', 'js/planner.js', 'js/storage.js', 'js/usda.js', 'js/recipes.js', 'js/barcode.js',
   'icons/icon-192.png', 'icons/icon-512.png',
 ];
 

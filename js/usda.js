@@ -37,6 +37,7 @@ export function toFood(item) {
     show,
     source: item.dataType,
     servingText: item.householdServingFullText || '',
+    gtinUpc: item.gtinUpc || '',
   };
 }
 

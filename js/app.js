@@ -1,6 +1,6 @@
 import { BUILTIN_FOODS, unitsFor, toGrams, nutrientsFor, formatPortion, foodFromLabel } from './foods.js';
 import { DIETS, SCHEDULES, getDiet, getSchedule } from './diets.js';
-import { dailyTargets, sumNutrients, ACTIVITY_LEVELS, GOALS, bodyFatNavy, composition } from './nutrition.js';
+import { dailyTargets, sumNutrients, ACTIVITY_LEVELS, GOALS, bodyFatNavy, composition, waterGoal, coachAdvice } from './nutrition.js';
 import { planDay, pickSharedMeal } from './planner.js';
 import { load, save, exportJSON, importJSON, newId } from './storage.js';
 import { searchUSDA } from './usda.js';
@@ -63,8 +63,74 @@ function foodById(id) {
 function active() {
   return state.profiles.find((p) => p.id === state.activeId) || state.profiles[0];
 }
-function targetsFor(p) {
-  return dailyTargets(p, getDiet(p.diet));
+// 'gym' or 'rest' for a date: the person's override for that day, else their usual gym weekdays.
+function dayTypeFor(p, date) {
+  const o = state.dayType?.[p.id]?.[date];
+  if (o) return o;
+  const [y, m, d] = date.split('-').map(Number);
+  return (p.gymDays || []).includes(new Date(y, m - 1, d).getDay()) ? 'gym' : 'rest';
+}
+function targetsFor(p, date = ui.date) {
+  return dailyTargets(p, getDiet(p.diet), dayTypeFor(p, date));
+}
+
+// ---------- daily habits & water ----------
+function waterFor(p, date) {
+  return state.water?.[p.id]?.[date] || 0;
+}
+function vegServings(entries) {
+  return entries.reduce((s, e) => {
+    const f = foodById(e.foodId);
+    return s + (f && (f.role === 'veg' || f.role === 'fruit') ? e.grams / 80 : 0);
+  }, 0);
+}
+const HABITS = [
+  { id: 'protein', label: 'Hit protein goal', auto: true },
+  { id: 'calories', label: 'Stayed within calories', auto: true },
+  { id: 'veg', label: '5+ servings of veggies & fruit', auto: true },
+  { id: 'water', label: 'Drank my water', auto: true },
+  { id: 'steps', label: '8,000+ steps' },
+  { id: 'sleep', label: '7+ hours of sleep' },
+  { id: 'workout', label: 'Workout or active day' },
+];
+function habitStatus(p, date) {
+  const log = state.logs[p.id]?.[date] || [];
+  const t = targetsFor(p, date);
+  const eaten = logTotals(log);
+  const manual = state.habits?.[p.id]?.[date] || {};
+  return {
+    protein: log.length > 0 && eaten.protein >= t.protein * 0.9,
+    calories: log.length > 0 && eaten.kcal >= t.kcal * 0.7 && eaten.kcal <= t.kcal * 1.05,
+    veg: vegServings(log) >= 5,
+    water: waterFor(p, date) >= waterGoal(p),
+    steps: Boolean(manual.steps),
+    sleep: Boolean(manual.sleep),
+    workout: Boolean(manual.workout),
+  };
+}
+
+function habitsCard(p) {
+  const today = habitStatus(p, ui.date);
+  const week = Array.from({ length: 7 }, (_, i) => habitStatus(p, shiftDate(ui.date, -i)));
+  const done = HABITS.filter((h) => today[h.id]).length;
+  const water = waterFor(p, ui.date);
+  const goal = waterGoal(p);
+  return `<div class="card">
+    <div class="row spread"><b>💧 Water</b><span class="small muted">${water} / ${goal} oz</span></div>
+    <div class="bar"><div class="track"><div class="fill water" style="width:${Math.min(100, (water / goal) * 100)}%"></div></div></div>
+    <div class="row" style="margin-top:8px"><button class="btn small" data-action="water" data-oz="8">+ 8 oz glass</button><button class="btn small" data-action="water" data-oz="16">+ 16 oz bottle</button><button class="btn small ghost" data-action="water" data-oz="-8" aria-label="Remove 8 oz">− 8</button></div>
+  </div>
+  <div class="card">
+    <div class="row spread"><b>Daily habits</b><span class="small muted">${done} of ${HABITS.length} today</span></div>
+    <ul class="items habits">${HABITS.map((h) => {
+      const n = week.filter((d) => d[h.id]).length;
+      const box = h.auto
+        ? `<span class="check ${today[h.id] ? 'on' : ''}" aria-hidden="true">${today[h.id] ? '✓' : ''}</span>`
+        : `<input type="checkbox" data-action="habit" value="${h.id}" ${today[h.id] ? 'checked' : ''} aria-label="${esc(h.label)}">`;
+      return `<li><label class="row" style="margin:0;color:inherit">${box} ${esc(h.label)}${h.auto ? ' <span class="small muted">(auto)</span>' : ''}</label><span class="small muted">${n}/7 days</span></li>`;
+    }).join('')}</ul>
+    <p class="small muted" style="margin:4px 0 0">Habits drive fat loss more than any single meal. Aim for most of these most days.</p>
+  </div>`;
 }
 function dayLog(p, date) {
   return ((state.logs[p.id] ||= {})[date] ||= []);
@@ -103,7 +169,7 @@ function planFor(p, date) {
   const v = variants(p, date);
   const { all = 0, ...mealVariants } = v;
   return planDay({
-    profile: p, diet: getDiet(p.diet), schedule: getSchedule(p.schedule), targets: targetsFor(p),
+    profile: p, diet: getDiet(p.diet), schedule: getSchedule(p.schedule), targets: targetsFor(p, date),
     foods: allFoods(), date, variant: all, mealVariants, fixed: sharedFoods(p, date),
   });
 }
@@ -175,8 +241,12 @@ function todayView(p) {
     return `<div class="card">
       <div class="meal-head"><span class="meal-label">${esc(m.label)}${m.shared ? ` <span class="tag">👥 with ${esc(otherNames(p))}</span>` : ''}</span><span class="small muted">${r(m.totals.kcal)} kcal</span></div>
       <h3>${esc(m.title)}</h3>
+      ${m.recipe ? `<div class="row small muted" style="gap:6px;margin:2px 0 4px">${m.recipe.minutes ? `<span>⏱ ${m.recipe.minutes} min</span>` : ''}${(m.recipe.tags || []).map((t) => `<span class="tag">${esc(t)}</span>`).join('')}</div>` : ''}
       ${m.shared ? `<p class="small muted" style="margin:0">Your portion:</p>` : ''}
-      <ul class="items">${m.items.map((i) => `<li><span>${esc(i.food.name)}${i.personal ? ' <span class="small muted">(just you)</span>' : ''}</span><span class="qty">${esc(formatPortion(i.food, i.grams))}</span></li>`).join('')}</ul>
+      <ul class="items">${m.items.map((i) => `<li><span>${esc(i.food.name)}${i.personal ? ' <span class="small muted">(just you)</span>' : i.side ? ' <span class="small muted">(on the side)</span>' : ''}</span><span class="qty">${esc(formatPortion(i.food, i.grams))}</span></li>`).join('')}</ul>
+      ${m.recipe && m.recipe.steps?.length ? `<details class="cook"><summary>How to make it</summary>
+        ${m.recipe.seasonings?.length ? `<p class="small"><b>Seasonings (no counting needed):</b> ${esc(m.recipe.seasonings.join(', '))}</p>` : ''}
+        <ol class="steps">${m.recipe.steps.map((s) => `<li>${esc(s)}</li>`).join('')}</ol></details>` : ''}
       ${macroLine(m.totals)}
       ${cook.length ? `<details class="cook"><summary>Cook for everyone</summary><ul class="items">${cook.map((c) => `<li><span class="grow">${esc(c.food.name)}<br><span class="small muted">${c.per.map((x) => `${esc(x.name)} ${esc(formatPortion(c.food, x.grams).replace(/ \(.*\)$/, ''))}`).join(' · ')}</span></span><span class="qty">${esc(formatPortion(c.food, c.total))}</span></li>`).join('')}</ul><p class="small muted">Cook the total, then serve each person their amount.</p></details>` : ''}
       <div class="row" style="margin-top:10px">
@@ -195,7 +265,7 @@ function todayView(p) {
         const f = foodById(e.foodId);
         if (!f) return '';
         const n = nutrientsFor(f, e.grams);
-        return `<li><span class="grow">${esc(f.name)}<br><span class="small muted">${esc(formatPortion(f, e.grams))} · ${r(n.kcal)} kcal · ${r(n.protein)}g P</span></span><button class="btn small ghost danger" data-action="removeLog" data-id="${e.id}" aria-label="Remove">✕</button></li>`;
+        return `<li><span class="grow linkish" data-action="editLog" data-id="${e.id}" role="button" tabindex="0" title="Change amount">${esc(f.name)}<br><span class="small muted">${esc(formatPortion(f, e.grams))} · ${r(n.kcal)} kcal · ${r(n.protein)}g P · tap to edit</span></span><button class="btn small ghost danger" data-action="removeLog" data-id="${e.id}" aria-label="Remove">✕</button></li>`;
       }).join('')}</ul></div>`).join('')
     : '<p class="muted">Nothing logged yet. Tap “I ate this” on a meal, or look up a food to add it.</p>';
 
@@ -210,6 +280,7 @@ function todayView(p) {
       <div><div class="kcal-big">${r(Math.abs(left))}</div><div class="small muted">${left >= 0 ? 'calories left' : 'calories over'} of ${t.kcal}</div></div>
       <div class="small muted" style="text-align:right">${esc(diet.name)}<br>${esc(schedule.name)}</div>
     </div>
+    ${p.cycleCalories && (p.gymDays || []).length ? `<div class="row" style="margin-top:8px"><button class="btn small" data-action="toggleDayType" title="Switch between gym day and rest day">${dayTypeFor(p, ui.date) === 'gym' ? '🏋️ Gym day' : '🛋️ Rest day'}${t.shift ? ` (${t.shift > 0 ? '+' : '−'}${Math.abs(t.shift)} kcal)` : ''} · switch</button></div>` : ''}
     <div class="bars" style="margin-top:12px">
       ${bar('Calories', eaten.kcal, t.kcal, '', '')}
       ${bar('Protein', eaten.protein, t.protein, 'p')}
@@ -229,7 +300,10 @@ function todayView(p) {
   ${mealCards}
 
   <div class="row spread"><h2>What I ate</h2><button class="btn small" data-action="go" data-tab="lookup">+ Add food</button></div>
-  ${logHtml}`;
+  ${logHtml}
+
+  <h2>Water & habits</h2>
+  ${habitsCard(p)}`;
 }
 
 function shoppingList(p, everyone) {
@@ -277,32 +351,56 @@ function renderLookupResults() {
   const words = q.split(/\s+/).filter(Boolean);
   const local = words.length ? allFoods().filter((f) => words.every((w) => f.name.toLowerCase().includes(w))) : [];
   const li = (f, extra = '') => `<li data-action="openFood" data-id="${esc(f.id)}"><div>${esc(f.name)}</div><div class="small muted">${r(f.kcal)} kcal · ${r(f.protein)}g P · ${r(f.carbs)}g C · ${r(f.fat)}g F per 100 g${extra}</div></li>`;
+  const recent = recentFoods(active());
   box.innerHTML = !q
-    ? '<p class="small muted">Over 70 common foods are built in. Search USDA for anything else, including brand-name products.</p>'
+    ? `${recent.length ? `<h2>Recent</h2><ul class="results">${recent.map(({ food, grams }) => `<li data-action="openFood" data-id="${esc(food.id)}" data-grams="${grams}"><div>${esc(food.name)}</div><div class="small muted">Last time: ${esc(formatPortion(food, grams))} · ${r(nutrientsFor(food, grams).kcal)} kcal</div></li>`).join('')}</ul>` : ''}
+       <p class="small muted">Over 90 common foods are built in. Search USDA for anything else, including brand-name products and restaurant foods.</p>`
     : `${local.length ? `<h2>My foods & built-in</h2><ul class="results">${local.slice(0, 30).map((f) => li(f)).join('')}</ul>` : '<p class="muted">No built-in match.</p>'}
        <div class="row" style="margin:12px 0"><button class="btn primary" data-action="usdaSearch">Search USDA for “${esc(ui.lookup.query.trim())}”</button><span class="small muted">${esc(ui.lookup.usdaStatus)}</span></div>
        ${ui.lookup.usda.length ? `<h2>USDA results</h2><ul class="results">${ui.lookup.usda.map((f) => li(f, f.source === 'Branded' ? ' · brand' : '')).join('')}</ul>` : ''}`;
 }
 
+// The person's most recently logged foods (newest first), each with the amount they had last time.
+function recentFoods(p, limit = 10) {
+  if (!p) return [];
+  const days = Object.keys(state.logs[p.id] || {}).sort().reverse();
+  const seen = new Map();
+  for (const d of days) {
+    for (const e of [...state.logs[p.id][d]].reverse()) {
+      const food = foodById(e.foodId);
+      if (food && !seen.has(food.id)) seen.set(food.id, { food, grams: e.grams });
+      if (seen.size >= limit) return [...seen.values()];
+    }
+  }
+  return [...seen.values()];
+}
+
 let modalFood = null;
-function openFoodModal(food) {
+let modalEditId = null; // log entry being edited, if any
+// opts: { grams } to prefill an amount, { editId } to change an existing log entry
+function openFoodModal(food, opts = {}) {
   modalFood = food;
+  const p = active();
+  const editing = opts.editId ? dayLog(p, ui.date).find((e) => e.id === opts.editId) : null;
+  modalEditId = editing ? editing.id : null;
+  const grams = editing ? editing.grams : opts.grams;
   const units = Object.keys(unitsFor(food));
   const defUnit = food.show && units.includes(food.show) ? food.show : 'g';
-  const p = active();
+  const defQty = grams ? Math.round((grams / unitsFor(food)[defUnit]) * 100) / 100 : defUnit === 'g' ? 100 : 1;
   const meals = getSchedule(p.schedule).meals;
   const liked = (p.liked || []).includes(food.id);
+  const mealSel = editing?.meal;
   modalBody.innerHTML = `
     <div class="row spread"><h2 style="margin:0">${esc(food.name)}</h2><button class="btn small" data-action="closeModal">Close</button></div>
     ${food.servingText ? `<p class="small muted">Label serving: ${esc(food.servingText)}</p>` : ''}
     <div class="grid2">
-      <div><label for="fqty">Amount</label><input id="fqty" type="number" inputmode="decimal" min="0" step="any" value="${defUnit === 'g' ? 100 : 1}"></div>
+      <div><label for="fqty">Amount</label><input id="fqty" type="number" inputmode="decimal" min="0" step="any" value="${defQty}"></div>
       <div><label for="funit">Unit</label><select id="funit">${units.map((u) => `<option ${u === defUnit ? 'selected' : ''}>${esc(u)}</option>`).join('')}</select></div>
     </div>
     <div id="fnut" style="margin-top:12px"></div>
-    <label for="fmeal">Add to ${esc(p.name)}'s log for ${prettyDate(ui.date)}</label>
-    <div class="row"><select id="fmeal" class="grow" style="width:auto">${meals.map((m) => `<option value="${m.id}">${esc(m.label)}</option>`).join('')}<option value="other">Other</option></select>
-      <button class="btn primary" data-action="logFood">Add</button></div>
+    <label for="fmeal">${editing ? 'Meal' : `Add to ${esc(p.name)}'s log for ${prettyDate(ui.date)}`}</label>
+    <div class="row"><select id="fmeal" class="grow" style="width:auto">${meals.map((m) => `<option value="${m.id}" ${m.id === mealSel ? 'selected' : ''}>${esc(m.label)}</option>`).join('')}<option value="other" ${mealSel === 'other' ? 'selected' : ''}>Other</option></select>
+      <button class="btn primary" data-action="logFood">${editing ? 'Save change' : 'Add'}</button></div>
     <div class="row" style="margin-top:12px">${food.role !== 'other' || food.custom ? `<button class="btn small" data-action="toggleLikeModal">${liked ? '★ Liked — used in plans' : '☆ I like this (use in plans)'}</button>` : ''}${food.recipe ? `<button class="btn small" data-action="editRecipe" data-id="${esc(food.id)}">Edit recipe</button>` : ''}</div>`;
   updateFoodModal();
   if (!modal.open) modal.showModal();
@@ -399,6 +497,23 @@ function dietsView(p) {
       <div class="small muted">For you: ${r(dt.protein)}g protein · ${r(dt.carbs)}g carbs · ${r(dt.fat)}g fat${d.sodiumMaxMg ? ` · sodium under ${d.sodiumMaxMg} mg` : ''}</div>
     </div>`;
   }).join('')}
+  <h2>Fat-loss playbook</h2>
+  <div class="card playbook">
+    <p class="muted small">What every diet above has in common. Get these right and the diet you pick matters much less.</p>
+    <ol>
+      <li><b>Calories decide fat loss; protein decides what you lose.</b> Stay near your calorie target and hit protein every day so the weight that comes off is fat, not muscle.</li>
+      <li><b>Protein at every meal and snack</b> — about a palm or two. It's the most filling nutrient and protects your gym gains.</li>
+      <li><b>Half the plate vegetables.</b> Big volume, few calories, lots of fiber. Aim for 5+ servings of veggies and fruit a day.</li>
+      <li><b>Measure the calorie-dense stuff.</b> Oil, nut butter, cheese, nuts and dressing are where "healthy" meals quietly double. Use a spoon or the scale for those; eyeball the vegetables.</li>
+      <li><b>Don't drink your calories.</b> Water, black coffee, tea and diet drinks. Juice, soda, fancy coffee and alcohol add up fast and don't fill you up. If you drink, log it — a light beer is ~100 kcal, a glass of wine ~125.</li>
+      <li><b>Lift 3–4 days a week and walk daily.</b> Lifting keeps muscle; 8,000+ steps burns more than most people's workouts.</li>
+      <li><b>Sleep 7+ hours.</b> Short sleep raises hunger and cravings the next day.</li>
+      <li><b>Plan and prep.</b> Cook proteins and grains in batches twice a week (the shopping list and "meal-prep" tags help). Decisions made hungry are rarely good ones.</li>
+      <li><b>Weigh in weekly, measure your waist every 2 weeks</b> — same time, same conditions. One weigh-in means little; the trend is what counts, and the Progress coach watches it for you.</li>
+      <li><b>Plan for weekends and eating out.</b> Pick a protein + vegetable plate, ask for sauces on the side, and log it. One off meal never ruins progress; an off weekend every weekend can.</li>
+      <li><b>Expect plateaus.</b> When the scale and waist both stall for 2–3 weeks with honest logging, trim 100–150 kcal. The coach suggests this when the data shows it.</li>
+    </ol>
+  </div>
   <p class="notice">This app gives general guidance, not medical advice. Check with your doctor before big diet changes, especially keto or fasting if you take medication for blood sugar or blood pressure.</p>`;
 }
 
@@ -426,6 +541,9 @@ function profileForm(p) {
       <div><label>Strength training days / week</label><input type="number" name="liftDays" min="0" max="7" inputmode="numeric" value="${esc(v.liftDays)}"></div>
       <div><label>Goal</label><select name="goal">${opt(GOALS, v.goal)}</select></div>
     </div>
+    <label>Which days do you usually work out?</label>
+    <div class="row">${['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((d, i) => `<label class="row" style="margin:0 10px 0 0"><input type="checkbox" name="gymDay" value="${i}" ${(v.gymDays || []).includes(i) ? 'checked' : ''}> ${d}</label>`).join('')}</div>
+    <label class="row" style="margin-top:10px"><input type="checkbox" name="cycleCalories" ${v.cycleCalories ? 'checked' : ''}> Eat a little more on gym days and a little less on rest days (same weekly total)</label>
     <label>Weight loss pace (for “Lose fat”)</label>
     <select name="lossRate">${[0.5, 1, 1.5, 2].map((x) => `<option value="${x}" ${Number(v.lossRate) === x ? 'selected' : ''}>${x} lb per week${x === 1 ? ' (recommended)' : x === 2 ? ' (aggressive)' : ''}</option>`).join('')}</select>
     <div class="grid2">
@@ -446,9 +564,11 @@ function profileView(p) {
   return `<div class="row spread"><h1>${esc(p.name)}</h1><button class="btn small" data-action="editProfile">Edit</button></div>
   <div class="card">
     <div class="row spread"><b>Daily targets</b><span class="small muted">${esc(getDiet(p.diet).name)}</span></div>
-    <div class="kcal-big" style="margin:8px 0">${t.kcal} <span class="small muted">kcal / day</span></div>
-    ${macroLine(t)}
-    <p class="small muted">Resting burn (BMR) ${t.bmr} · Maintenance (TDEE) ${t.tdee} · Fiber ${t.fiber}g+ · Sodium under ${t.sodium} mg</p>
+    <div class="kcal-big" style="margin:8px 0">${t.baseKcal} <span class="small muted">kcal / day${p.cycleCalories && (p.gymDays || []).length ? ' on average' : ''}</span></div>
+    ${macroLine({ ...t, kcal: t.baseKcal })}
+    <p class="small muted">Resting burn (BMR) ${t.bmr} · Maintenance (TDEE) ${t.tdee} · Fiber ${t.fiber}g+ · Sodium under ${t.sodium} mg · Water ${waterGoal(p)} oz</p>
+    ${p.kcalAdjust ? `<p class="small">Includes a coach adjustment of ${p.kcalAdjust > 0 ? '+' : '−'}${Math.abs(p.kcalAdjust)} kcal. <a href="#" data-action="resetAdjust">Reset</a></p>` : ''}
+    ${p.cycleCalories && (p.gymDays || []).length ? `<p class="small muted">Gym days: ${dailyTargets(p, getDiet(p.diet), 'gym').kcal} kcal · Rest days: ${dailyTargets(p, getDiet(p.diet), 'rest').kcal} kcal</p>` : ''}
   </div>
 
   <p class="small muted">Weight ${latest} lb${p.goalWeightLb ? ` · Goal ${p.goalWeightLb} lb` : ''} · ${change <= 0 ? '▼' : '▲'} ${Math.abs(change).toFixed(1)} lb since ${start} lb. Log weigh-ins and measurements in <a href="#" data-action="go" data-tab="progress">Progress</a>.</p>
@@ -757,7 +877,17 @@ function progressView(p) {
   }
 
   const today = rows.find((r0) => r0.date === todayStr()) || {};
+  const loggedDays = Array.from({ length: 14 }, (_, i) => shiftDate(todayStr(), -i)).filter((d) => (state.logs[p.id]?.[d] || []).length).length;
+  const advice = coachAdvice(p, checkins(p), loggedDays, todayStr());
+  const recentlyApplied = state.coachLog?.[p.id] && Date.parse(todayStr()) - Date.parse(state.coachLog[p.id]) < 14 * 864e5;
+  const coach = `<div class="card coach ${advice.status}">
+    <div class="row spread"><b>🧭 Weekly coach: ${esc(advice.title)}</b></div>
+    <p>${esc(advice.detail)}</p>
+    ${advice.adjust && !recentlyApplied ? `<div class="row"><button class="btn primary small" data-action="applyCoach" data-kcal="${advice.adjust}">${advice.adjust > 0 ? 'Add' : 'Cut'} ${Math.abs(advice.adjust)} kcal a day</button><span class="small muted">Now ${targetsFor(p).baseKcal} → ${Math.max(targetsFor(p).baseKcal + advice.adjust, 0)} kcal</span></div>` : ''}
+    ${advice.adjust && recentlyApplied ? '<p class="small muted">You changed calories in the last 2 weeks — give it 2 weeks to show before changing again.</p>' : ''}
+  </div>`;
   return `<h1>${esc(p.name)}'s progress</h1>
+  ${coach}
   <div class="card">${summary}</div>
 
   <h2>Check in</h2>
@@ -978,7 +1108,7 @@ const actions = {
   openFood(el) {
     const id = el.dataset.id;
     const food = foodById(id) || ui.lookup.usda.find((f) => f.id === id);
-    if (food) openFoodModal(food);
+    if (food) openFoodModal(food, { grams: Number(el.dataset.grams) || undefined });
   },
   async usdaSearch() {
     const q = ui.lookup.query.trim();
@@ -1001,10 +1131,56 @@ const actions = {
     if (qty <= 0) return toast('Enter an amount first');
     if (!foodById(f.id)) state.customFoods.push({ ...f }); // keep USDA foods so the log can find them later
     const p = active();
-    dayLog(p, ui.date).push({ id: newId('log'), foodId: f.id, grams: toGrams(f, qty, $('#funit').value), meal: $('#fmeal').value });
+    const grams = toGrams(f, qty, $('#funit').value);
+    const existing = modalEditId && dayLog(p, ui.date).find((e) => e.id === modalEditId);
+    if (existing) Object.assign(existing, { grams, meal: $('#fmeal').value, fromPlan: undefined });
+    else dayLog(p, ui.date).push({ id: newId('log'), foodId: f.id, grams, meal: $('#fmeal').value });
     persist();
     modal.close();
-    toast(`Added to ${p.name}'s log`);
+    toast(existing ? 'Amount updated' : `Added to ${p.name}'s log`);
+    render();
+  },
+  editLog(el) {
+    const e = dayLog(active(), ui.date).find((x) => x.id === el.dataset.id);
+    const f = e && foodById(e.foodId);
+    if (f) openFoodModal(f, { editId: e.id });
+  },
+  water(el) {
+    const p = active();
+    const day = ((state.water ||= {})[p.id] ||= {});
+    day[ui.date] = Math.max(0, (day[ui.date] || 0) + Number(el.dataset.oz));
+    persist();
+    render();
+  },
+  habit(el) {
+    const p = active();
+    const day = (((state.habits ||= {})[p.id] ||= {})[ui.date] ||= {});
+    day[el.value] = el.checked;
+    persist();
+    const y = window.scrollY;
+    render();
+    window.scrollTo(0, y);
+  },
+  toggleDayType() {
+    const p = active();
+    const next = dayTypeFor(p, ui.date) === 'gym' ? 'rest' : 'gym';
+    ((state.dayType ||= {})[p.id] ||= {})[ui.date] = next;
+    persist();
+    render();
+    toast(next === 'gym' ? 'Gym day — a bit more food today' : 'Rest day — a bit less food today');
+  },
+  applyCoach(el) {
+    const p = active();
+    p.kcalAdjust = Math.max(-500, Math.min(500, (p.kcalAdjust || 0) + Number(el.dataset.kcal)));
+    (state.coachLog ||= {})[p.id] = todayStr();
+    persist();
+    render();
+    toast(`Daily calories are now ${targetsFor(p).kcal}`);
+  },
+  resetAdjust() {
+    const p = active();
+    p.kcalAdjust = 0;
+    persist();
     render();
   },
   toggleLikeModal() {
@@ -1126,7 +1302,7 @@ document.addEventListener('keydown', (e) => {
 
 document.addEventListener('change', (e) => {
   const el = e.target;
-  if (['onlyLiked', 'schedule', 'shareMeal', 'shareMember'].includes(el.dataset.action)) actions[el.dataset.action](el);
+  if (['onlyLiked', 'schedule', 'shareMeal', 'shareMember', 'habit'].includes(el.dataset.action)) actions[el.dataset.action](el);
   else if (el.id === 'funit') updateFoodModal();
   else if (el.dataset.ing != null || el.dataset.recipe || el.closest?.('#recipeMeta')) recipeInput(el);
   else if (el.id === 'importFile' && el.files[0]) {
@@ -1186,6 +1362,8 @@ document.addEventListener('submit', (e) => {
       lossRate: num('lossRate'),
       diet: fd.get('diet'),
       schedule: fd.get('schedule'),
+      gymDays: fd.getAll('gymDay').map(Number),
+      cycleCalories: fd.get('cycleCalories') === 'on',
     };
     const existing = state.profiles.find((x) => x.id === form.dataset.id);
     if (existing) {

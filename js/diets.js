@@ -58,7 +58,7 @@ export const DIETS = [
     proteinMaxPct: 0.3,
     exclude: ['grain', 'legume', 'starchy', 'fruit', 'sugar'],
     prefer: ['nonstarchy'],
-    limit: ['lowfatdairy'],
+    limit: ['lowfatdairy', 'berry'],
   },
   {
     id: 'paleo',

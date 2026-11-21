@@ -13,32 +13,33 @@ const planWith = (p, fixed, date) => {
   return planDay({ profile: p, diet, schedule: getSchedule(p.schedule), targets: dailyTargets(p, diet), foods: BUILTIN_FOODS, date, fixed });
 };
 
-test('shared dinner: same foods for both, each person sized to their own targets', () => {
-  for (const date of ['2026-11-19', '2026-11-20', '2026-11-21', '2026-11-22']) {
+test('shared dinner: same recipe for both, each person sized to their own targets', () => {
+  for (const date of ['2026-11-19', '2026-11-20', '2026-11-21', '2026-11-22', '2026-11-23']) {
     const members = [him, her].map((p) => ({ profile: p, diet: getDiet(p.diet) }));
-    const ids = pickSharedMeal({ members, foods: BUILTIN_FOODS, date, mealId: 'dinner' });
-    assert.ok(!ids.includes('ground_turkey'), 'her dislike is respected');
-    const a = planWith(him, { dinner: ids }, date).meals.find((m) => m.id === 'dinner');
-    const b = planWith(her, { dinner: ids }, date).meals.find((m) => m.id === 'dinner');
-    const core = (m) => m.items.filter((i) => !i.personal).map((i) => i.food.id).sort();
-    assert.deepEqual(core(a), core(b), date);
+    const shared = pickSharedMeal({ members, foods: BUILTIN_FOODS, date, mealId: 'dinner' });
+    assert.ok(shared.template, 'a library meal fits both');
+    const a = planWith(him, { dinner: shared }, date).meals.find((m) => m.id === 'dinner');
+    const b = planWith(her, { dinner: shared }, date).meals.find((m) => m.id === 'dinner');
+    assert.equal(a.title, b.title);
     assert.ok(a.shared && b.shared);
-    const protein = (m) => m.items.find((i) => i.food.role === 'protein').grams;
-    assert.notEqual(protein(a), protein(b), 'portions differ');
-    // Foods everyone likes win: chicken and salmon are the only proteins both liked.
-    assert.ok(['chicken_breast', 'salmon'].includes(ids[0]), `${date}: ${ids[0]}`);
+    for (const m of [a, b]) for (const i of m.items) assert.notEqual(i.food.id, 'ground_turkey', 'her dislike is respected');
+    const main = (m) => m.items.find((i) => i.solve === 'protein');
+    assert.equal(main(a).food.id, main(b).food.id);
+    assert.ok(main(a).grams > main(b).grams, 'his portion is bigger');
+    // Meals built on a protein both like: chicken, salmon (shared likes) or shrimp/turkey (liked by one).
+    assert.ok(['chicken_breast', 'salmon'].includes(main(a).food.id), `${date}: ${main(a).food.id}`);
   }
 });
 
 test('shared meal with a keto member: keto person skips the starch, others keep it', () => {
   const keto = { ...her, diet: 'keto', schedule: 'three_snack' };
   const members = [him, keto].map((p) => ({ profile: p, diet: getDiet(p.diet) }));
-  for (const date of ['2026-11-19', '2026-11-20', '2026-11-21']) {
-    const ids = pickSharedMeal({ members, foods: BUILTIN_FOODS, date, mealId: 'dinner' });
-    const k = planWith(keto, { dinner: ids }, date).meals.find((m) => m.id === 'dinner');
-    const h = planWith(him, { dinner: ids }, date).meals.find((m) => m.id === 'dinner');
-    assert.ok(!k.items.some((i) => i.food.role === 'carb'));
-    assert.ok(h.items.some((i) => i.food.role === 'carb'));
+  for (const date of ['2026-11-19', '2026-11-20', '2026-11-21', '2026-11-22']) {
+    const shared = pickSharedMeal({ members, foods: BUILTIN_FOODS, date, mealId: 'dinner' });
+    const k = planWith(keto, { dinner: shared }, date).meals.find((m) => m.id === 'dinner');
+    const h = planWith(him, { dinner: shared }, date).meals.find((m) => m.id === 'dinner');
+    assert.equal(k.title, h.title);
+    assert.ok(!k.items.some((i) => i.food.role === 'carb' && i.solve), `${date}: keto plate has a starch`);
     for (const i of k.items) assert.ok(dietAllows(getDiet('keto'), i.food), i.food.id);
   }
 });

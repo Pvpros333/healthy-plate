@@ -84,15 +84,42 @@ export const BUILTIN_FOODS = [
   F('cheddar', 'Cheddar cheese', 'fat', 'bms', [409, 23, 2.4, 34, 0, 653], ['dairy'], { slice: 28 }, 'oz'),
   F('mozzarella', 'Mozzarella, part-skim', 'fat', 'ms', [254, 24.3, 2.8, 15.9, 0, 619], ['dairy'], { stick: 28 }, 'oz'),
   F('feta', 'Feta cheese', 'fat', 'm', [264, 14.2, 4.1, 21.3, 0, 917], ['dairy'], {}, 'oz'),
-  F('butter', 'Butter', 'fat', 'bm', [717, 0.9, 0.1, 81.1, 0, 643], ['dairy', 'butter'], { tbsp: 14 }, 'tbsp'),
+  F('butter', 'Butter', 'fat', '',[717, 0.9, 0.1, 81.1, 0, 643], ['dairy', 'butter'], { tbsp: 14 }, 'tbsp'),
   F('hummus', 'Hummus', 'fat', 'ms', [166, 7.9, 14.3, 9.6, 6, 379], ['legume', 'plant'], { tbsp: 15 }, 'tbsp'),
   F('dark_chocolate', 'Dark chocolate 70–85%', 'fat', 's', [598, 7.8, 45.9, 42.6, 10.9, 20], ['sugar'], {}, 'oz'),
+  F('parmesan', 'Parmesan, grated', 'fat', '',[392, 35.8, 3.2, 25.8, 0, 1376], ['dairy'], { tbsp: 5 }, 'tbsp'),
+
+  // More ingredients used by the meal library (meals.js)
+  F('cod', 'Cod (cooked)', 'protein', 'm', [105, 23, 0, 0.9, 0, 78], ['fish', 'lean'], {}, 'oz'),
+  F('chicken_sausage', 'Chicken sausage (cooked)', 'protein', 'bm', [170, 15, 5, 10, 0, 650], ['poultry', 'processed'], { link: 85 }, 'link'),
+  F('turkey_bacon', 'Turkey bacon (cooked)', 'protein', 'b', [250, 21, 1, 18, 0, 1350], ['poultry', 'processed'], { slice: 14 }, 'slice'),
+  F('edamame', 'Edamame, shelled (cooked)', 'protein', 'ms', [121, 11.9, 8.9, 5.2, 5.2, 6], ['legume', 'plant'], { cup: 155 }, 'cup'),
+  F('ww_english_muffin', 'Whole wheat English muffin', 'carb', 'b', [203, 8.8, 40.4, 2.1, 6.7, 420], ['grain', 'wholegrain'], { muffin: 66 }, 'muffin'),
+  F('ww_pita', 'Whole wheat pita (6½")', 'carb', 'm', [262, 9.8, 55, 2.6, 7.4, 530], ['grain', 'wholegrain'], { pita: 64 }, 'pita'),
+  F('lowcarb_tortilla', 'Low-carb high-fiber tortilla', 'carb', 'bm', [163, 11.6, 44.2, 7, 34.9, 721], ['processed'], { tortilla: 43 }, 'tortilla'),
+  F('corn', 'Corn kernels (cooked)', 'carb', 'm', [96, 3.4, 21, 1.5, 2.4, 1], ['grain', 'starchy'], { cup: 145 }, 'cup'),
+  F('romaine', 'Romaine lettuce', 'veg', 'm', [17, 1.2, 3.3, 0.3, 2.1, 8], ['nonstarchy'], { cup: 47, leaf: 6 }, 'cup'),
+  F('cabbage', 'Cabbage / coleslaw mix', 'veg', 'm', [25, 1.3, 5.8, 0.1, 2.5, 18], ['nonstarchy'], { cup: 89 }, 'cup'),
+  F('kale', 'Kale (raw)', 'veg', 'm', [35, 2.9, 4.4, 1.5, 4.1, 53], ['nonstarchy'], { cup: 21 }, 'cup'),
+  F('brussels', 'Brussels sprouts (roasted)', 'veg', 'm', [36, 2.6, 7.1, 0.5, 2.6, 21], ['nonstarchy'], { cup: 156 }, 'cup'),
+  F('stirfry_veg', 'Stir-fry vegetable blend (frozen, cooked)', 'veg', 'm', [42, 2.3, 8, 0.3, 2.7, 30], ['nonstarchy'], { cup: 135 }, 'cup'),
+  F('cauli_rice', 'Cauliflower rice (cooked)', 'veg', 'm', [23, 1.8, 4.1, 0.5, 2.3, 15], ['nonstarchy'], { cup: 107 }, 'cup'),
+  F('spaghetti_squash', 'Spaghetti squash (cooked)', 'veg', 'm', [27, 0.7, 6.5, 0.3, 1.4, 18], ['nonstarchy'], { cup: 155 }, 'cup'),
+  F('pineapple', 'Pineapple', 'fruit', 'bs', [50, 0.5, 13.1, 0.1, 1.4, 1], ['fruit'], { cup: 165 }, 'cup'),
+  F('pear', 'Pear', 'fruit', 'bs', [57, 0.4, 15.2, 0.1, 3.1, 1], ['fruit'], { pear: 178 }, 'pear'),
+  F('marinara', 'Marinara sauce (jarred)', 'other', '', [50, 1.4, 8, 1.5, 2, 430], [], { cup: 250 }, 'cup'),
+  F('soy_sauce_lite', 'Soy sauce, reduced sodium', 'other', '', [63, 6.3, 6.3, 0, 0, 3594], [], { tbsp: 16, tsp: 5.3 }, 'tbsp'),
+  F('light_dressing', 'Light vinaigrette dressing', 'other', '', [150, 0.3, 13, 10, 0, 900], [], { tbsp: 15 }, 'tbsp'),
 
   // Other (not planned automatically, but available to look up and log)
   F('milk_2', 'Milk, 2%', 'other', '', [50, 3.3, 4.8, 2, 0, 47], ['dairy'], { cup: 244 }, 'cup'),
   F('almond_milk', 'Almond milk, unsweetened', 'other', '', [15, 0.6, 0.6, 1.2, 0.2, 72], ['nuts'], { cup: 240 }, 'cup'),
   F('salsa', 'Salsa', 'other', '', [36, 1.5, 6.7, 0.2, 1.9, 430], [], { tbsp: 16 }, 'tbsp'),
   F('honey', 'Honey', 'other', '', [304, 0.3, 82.4, 0, 0.2, 4], ['sugar'], { tbsp: 21 }, 'tbsp'),
+  F('light_beer', 'Light beer', 'other', '', [29, 0.2, 1.6, 0, 0, 4], ['alcohol'], { can: 355 }, 'can'),
+  F('wine', 'Wine, red or white', 'other', '', [84, 0.1, 2.7, 0, 0, 5], ['alcohol'], { glass: 148 }, 'glass'),
+  F('liquor', 'Liquor, 80 proof (vodka, whiskey…)', 'other', '', [231, 0, 0, 0, 0, 1], ['alcohol'], { shot: 42 }, 'shot'),
+  F('coffee_black', 'Coffee, black', 'other', '', [1, 0.1, 0, 0, 0, 2], [], { cup: 237 }, 'cup'),
 ];
 
 export const COMMON_UNITS = { g: 1, oz: 28.3495, lb: 453.592 };
